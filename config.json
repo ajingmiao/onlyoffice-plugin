@@ -1,0 +1,15 @@
+{
+  "name": "hello world",
+  "guid": "asc.{6A1D2E30-1B7D-4A87-A2D7-4F3BB8A3C9E1}",
+  "version": "2.1",
+  "variations": [
+    {
+      "description": "sys",
+      "type": "system",
+      "url": "index.html",
+      "EditorsSupport": ["word"],
+      "isDisplayedInViewer": false,
+      "events": ["onSelectionChanged", "onDocumentContentReady", "onClick", "onHyperLinkClick"]
+    }
+  ]
+}
