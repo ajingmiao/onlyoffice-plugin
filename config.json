@@ -5,7 +5,7 @@
   "variations": [
     {
       "description": "sys",
-      "type": "system",
+      "type": "desktop",
       "url": "index.html",
       "EditorsSupport": ["word"],
       "isDisplayedInViewer": false,

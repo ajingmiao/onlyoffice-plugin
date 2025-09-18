@@ -282,7 +282,7 @@ import { logger } from '../core/logger.js';
           } catch (notifyError) {
             console.log('⚠️ ChartBindingNotify 调用失败:', notifyError);
           }
-
+          console.log('已经绑定的返回数据对象...',out);
           return out;
         }
 
@@ -303,6 +303,7 @@ import { logger } from '../core/logger.js';
           // 你可以在这里扩展你的业务字段，比如 bindingPayload / datasetId / mapping 等
         };
         setBindingByFingerprint(doc, fp, meta);
+        console.log('沙箱中获取到的图表ID...',meta.chartId);
         console.log('沙箱中获取到的图表类型...',meta.chartType);
 
         // 由于 callCommand 回调不可靠，我们在沙箱内部直接触发事件
@@ -347,11 +348,81 @@ import { logger } from '../core/logger.js';
           return;
         }
 
-        _logger.info('📞 启动沙箱（期待内部通知）...');
-        global.Asc.plugin.callCommand(new Function(funcStr), function(info) {
-          // 这个回调可能永远不会执行，但我们记录一下以防万一
-          _logger.info('🎉 意外！callCommand 回调执行了:', info);
-        });
+        // 尝试多种 callCommand 调用方式来解决回调问题
+        _logger.info('📞 尝试不同的 callCommand 调用方式...');
+
+        // 方法1：标准调用（你说这个不回调）
+        try {
+          global.Asc.plugin.callCommand(new Function(funcStr), function(info) {
+            _logger.info('🎉 方法1回调执行:', info);
+            if (info && info.ok) {
+              _logger.info('📊 图表检测成功，通知外部');
+              if (info.action === 'exists' && info.meta) {
+                safeCb({
+                  type: 'chart-binding-exists',
+                  meta: info.meta,
+                  fingerprint: info.fingerprint
+                });
+              } else if (info.action === 'created' && info.meta) {
+                safeCb({
+                  type: 'chart-binding-created',
+                  meta: info.meta,
+                  fingerprint: info.fingerprint
+                });
+              }
+            }
+          });
+        } catch (e1) {
+          _logger.error('方法1失败:', e1);
+        }
+
+        // 方法2：异步调用
+        try {
+          global.Asc.plugin.callCommand(new Function(funcStr), true, function(info) {
+            _logger.info('🎉 方法2异步回调执行:', info);
+            if (info && info.ok) {
+              if (info.action === 'exists' && info.meta) {
+                safeCb({
+                  type: 'chart-binding-exists',
+                  meta: info.meta,
+                  fingerprint: info.fingerprint
+                });
+              } else if (info.action === 'created' && info.meta) {
+                safeCb({
+                  type: 'chart-binding-created',
+                  meta: info.meta,
+                  fingerprint: info.fingerprint
+                });
+              }
+            }
+          });
+        } catch (e2) {
+          _logger.error('方法2失败:', e2);
+        }
+
+        // 方法3：直接执行函数（不通过 callCommand）
+        try {
+          _logger.info('📞 方法3：直接执行沙箱函数...');
+          var directResult = (new Function(funcStr))();
+          _logger.info('📊 直接执行结果:', directResult);
+          if (directResult && directResult.ok) {
+            if (directResult.action === 'exists' && directResult.meta) {
+              safeCb({
+                type: 'chart-binding-exists',
+                meta: directResult.meta,
+                fingerprint: directResult.fingerprint
+              });
+            } else if (directResult.action === 'created' && directResult.meta) {
+              safeCb({
+                type: 'chart-binding-created',
+                meta: directResult.meta,
+                fingerprint: directResult.fingerprint
+              });
+            }
+          }
+        } catch (e3) {
+          _logger.error('方法3失败:', e3);
+        }
 
       } catch (callError) {
         _logger.error('🚨 执行失败:', callError);
