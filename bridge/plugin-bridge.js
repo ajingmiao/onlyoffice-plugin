@@ -378,7 +378,7 @@ import { logger } from '../core/logger.js';
 
         // 方法2：异步调用
         try {
-          global.Asc.plugin.callCommand(new Function(funcStr), true, function(info) {
+          global.Asc.plugin.callCommand(new Function(funcStr), function(info) {
             _logger.info('🎉 方法2异步回调执行:', info);
             if (info && info.ok) {
               if (info.action === 'exists' && info.meta) {
