@@ -84,7 +84,6 @@ import { logger } from '../core/logger.js';
             return;
           }
 
-          _logger.info('❌ 没有命中内容控件，开始图表检测...');
         } catch (ccError) {
           _logger.error('处理内容控件时出错:', ccError);
         }
@@ -99,12 +98,6 @@ import { logger } from '../core/logger.js';
         var funcStr = (function () {/*
         // =============== 沙箱开始 ===============
         console.log('🏁 沙箱代码开始执行');
-
-        // 测试沙箱环境的能力
-        console.log('🧪 测试沙箱环境:');
-        console.log('  typeof window:', typeof window);
-        console.log('  typeof global:', typeof global);
-        console.log('  typeof this:', typeof this);
 
         var out = { ok: true, action: 'none', message: '', meta: null, fingerprint: null, logs: [] };
         function dbg(){ try { out.logs.push(Array.prototype.join.call(arguments, ' ')); } catch (_e){} }
@@ -215,7 +208,6 @@ import { logger } from '../core/logger.js';
           } catch(e){ console.log('写入绑定失败:', e); }
         }
 
-        console.log('📄 获取文档对象...');
         var doc = getDoc();
         if (!doc) {
           console.log('❌ 无法获取文档对象');
@@ -259,30 +251,8 @@ import { logger } from '../core/logger.js';
           out.action = 'exists';
           out.meta = existed;
           out.message = '已存在图表绑定（自定义属性）';
-          console.log('✅ 发现已存在的绑定');
 
-          // 在沙箱内部直接通知外部
-          try {
-            console.log('🔗 尝试沙箱内部通知:');
-            console.log('  typeof window:', typeof window);
-            console.log('  window.ChartBindingNotify:', typeof (typeof window !== 'undefined' ? window.ChartBindingNotify : 'undefined'));
-
-            if (typeof window !== 'undefined' && window.ChartBindingNotify) {
-              window.ChartBindingNotify({
-                type: 'chart-binding-exists',
-                meta: existed,
-                fingerprint: fp
-              });
-              console.log('✅ 已通过 ChartBindingNotify 发送存在事件');
-            } else {
-              console.log('❌ 沙箱内部无法访问 window.ChartBindingNotify');
-              console.log('  window:', typeof window);
-              console.log('  ChartBindingNotify:', typeof window !== 'undefined' ? typeof window.ChartBindingNotify : 'window不存在');
-            }
-          } catch (notifyError) {
-            console.log('⚠️ ChartBindingNotify 调用失败:', notifyError);
-          }
-          console.log('已经绑定的返回数据对象...',out);
+          console.log('沙箱已经绑定的返回数据对象...',out);
           return out;
         }
 
