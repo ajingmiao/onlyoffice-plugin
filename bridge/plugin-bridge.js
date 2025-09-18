@@ -16,7 +16,13 @@ import { EditorService } from '../services/editor-service.js';
 
   function safeCb(payload) {
     try {
-      if (typeof _onEvent === 'function') _onEvent(payload);
+      _logger.info('🔄 safeCb called with payload:', payload);
+      if (typeof _onEvent === 'function') {
+        _logger.info('✅ _onEvent is available, calling...');
+        _onEvent(payload);
+      } else {
+        _logger.warn('❌ _onEvent is not a function:', typeof _onEvent);
+      }
     } catch (e) {
       try { _logger.error('[cb error]', e && e.message ? e.message : e); } catch (_) {}
     }
