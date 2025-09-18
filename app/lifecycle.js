@@ -121,8 +121,24 @@ export function bootstrap({ host, plugin, selection, events, commands }) {
 
     // 兼容字符串与 {text:'...'} 入参
     const data = msg.data;
-    await commands.dispatch({ command: msg.command, data });
-    // 可根据需要回执
-    host.sendInfo('pluginAck', { op: msg.command, data });
+    const result = await commands.dispatch({ command: msg.command, data });
+
+    // 根据命令类型发送不同的响应
+    if (msg.command === COMMANDS.GET_CHART_TYPE) {
+      if (result.ok && result.data) {
+        host.sendInfo('chartTypeResponse', result.data);
+      } else {
+        host.sendInfo('chartTypeResponse', { success: false, error: result.error });
+      }
+    } else if (msg.command === COMMANDS.UPDATE_CHART_BINDING) {
+      if (result.ok && result.data) {
+        host.sendInfo('chartDataUpdated', result.data);
+      } else {
+        host.sendInfo('chartDataUpdated', { success: false, error: result.error });
+      }
+    } else {
+      // 默认确认消息
+      host.sendInfo('pluginAck', { op: msg.command, data: result });
+    }
   });
 }

@@ -21,7 +21,8 @@ export const COMMANDS = {
     GET_CHART_SUMMARY: 'getChartSummary',
     UPDATE_BINDING: 'updateBinding',
     UPDATE_CHART_BINDING: 'updateChartBinding',
-    UPDATE_ROW_BINDING: 'updateRowBinding'
+    UPDATE_ROW_BINDING: 'updateRowBinding',
+    GET_CHART_TYPE: 'getChartType'  // 新增
   };
   
   export const EVENTS = {

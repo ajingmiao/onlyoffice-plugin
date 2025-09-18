@@ -87,7 +87,6 @@ import { EditorService } from '../services/editor-service.js';
 
   // 核心：生成图表指纹
   function buildChartFingerprint(sel, doc) {
-    console.log('🔖 开始生成图表指纹');
 
     // 1) 优先稳定 ID
     var stableId = null;
@@ -205,8 +204,6 @@ import { EditorService } from '../services/editor-service.js';
     }
 
     function buildChartFingerprint(sel, doc) {
-      console.log('🔖 开始生成图表指纹');
-
       // 1) 优先稳定 ID
       var stableId = null;
       try { if (sel && typeof sel.GetId === 'function') stableId = sel.GetId(); } catch(e){ console.log('GetId失败:', e); }
@@ -709,12 +706,18 @@ export class PluginBridge {
             meta: payload.meta,
             fingerprint: payload.fingerprint
           });
+          // 图表绑定存在时也触发选择变化检测
+          logger.info('Chart binding exists, triggering selection change detection');
+          setTimeout(() => cb?.(), 10);
         } else if (payload.type === 'chart-binding-created') {
           cb?.({
             type: 'chart-anchor-created',
             meta: payload.meta,
             fingerprint: payload.fingerprint
           });
+          // 图表绑定创建后也触发选择变化检测
+          logger.info('Chart binding created, triggering selection change detection');
+          setTimeout(() => cb?.(), 10);
         } else if (payload.type === 'content-control-clicked') {
           cb?.({
             tag: payload.tag,
@@ -728,11 +731,17 @@ export class PluginBridge {
             meta: payload.meta,
             anchor: payload.anchor
           });
+          // 图表锚点点击后也触发选择变化检测
+          logger.info('Chart anchor clicked, triggering selection change detection');
+          setTimeout(() => cb?.(), 10);
         } else if (payload.type === 'no-user-chart') {
           cb?.({
             type: 'no-user-chart',
             message: payload.message
           });
+          // 即使没有检测到用户图表，也触发选择变化检测以便其他检测逻辑执行
+          logger.info('No user chart detected, triggering selection change detection');
+          setTimeout(() => cb?.(), 10);
         } else if (payload.type === 'text-click') {
           // 文本点击时，仍然触发选择变化检测
           logger.info('Text click detected, triggering selection change detection');

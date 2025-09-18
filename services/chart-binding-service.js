@@ -562,12 +562,21 @@ export class ChartBindingService {
 
                 // 返回结果
                 if (targetChart && targetChart.hasBindingData) {
+                    // 提取图表类型信息
+                    const chartTypeInfo = {
+                        chartType: targetChart.detailedChartType?.specificType || targetChart.elementType || 'unknown',
+                        category: targetChart.detailedChartType?.category || 'unknown',
+                        description: targetChart.detailedChartType?.description || '未知图表类型',
+                        confidence: targetChart.detailedChartType?.confidence || 0.8
+                    };
+
                     const result = {
                         success: true,
                         message: 'Chart with bound data detected in super safe mode',
                         data: {
                             clickType: 'chart',
                             chartInfo: targetChart,
+                            chartTypeInfo: chartTypeInfo,  // 新增图表类型信息
                             boundData: targetChart.boundData.boundData || targetChart.boundData,
                             bindingMetadata: {
                                 bindingId: targetChart.boundData.bindingId,
@@ -585,20 +594,31 @@ export class ChartBindingService {
 
                     console.log('✅ 超级安全模式检测到图表点击，包含绑定数据!');
                     console.log('📊 图表标题:', result.data.boundData?.title);
-                    console.log('📊 图表类型:', result.data.boundData?.type);
+                    console.log('📊 图表类型:', result.data.chartTypeInfo?.chartType);
                     console.log('📊 数据源:', result.data.boundData?.dataSource);
 
                     return result;
 
                 } else if (chartDetectionResults.length > 0) {
-                    // 有图表但没有绑定数据
+                    // 有图表但没有绑定数据 - 也要返回图表类型信息
+                    const chart = targetChart || chartDetectionResults[0];
+                    const chartTypeInfo = {
+                        chartType: chart.detailedChartType?.specificType || chart.elementType || 'unknown',
+                        category: chart.detailedChartType?.category || 'unknown',
+                        description: chart.detailedChartType?.description || '未知图表类型',
+                        confidence: chart.detailedChartType?.confidence || 0.8
+                    };
+
                     console.log('⚠️ 检测到图表但无绑定数据');
+                    console.log('📊 图表类型:', chartTypeInfo.chartType);
+
                     return {
                         success: true,
                         message: 'Chart detected but no bound data',
                         data: {
                             clickType: 'chart',
-                            chartInfo: targetChart || chartDetectionResults[0],
+                            chartInfo: chart,
+                            chartTypeInfo: chartTypeInfo,  // 新增图表类型信息
                             boundData: null,
                             detectionSummary: {
                                 totalChartsFound: chartDetectionResults.length,
@@ -702,5 +722,155 @@ export class ChartBindingService {
      */
     cleanupTempData() {
         this.dataBinder.cleanupTempData();
+    }
+
+    /**
+     * 获取当前选中图表的类型信息
+     * @returns {Object} 图表类型信息
+     */
+    async getChartType() {
+        console.log('📈 开始获取图表类型信息...');
+
+        try {
+            const result = await this.editor.runInDoc(function() {
+                console.log('🏁 图表类型检测开始执行');
+
+                const doc = Api.GetDocument();
+                if (!doc) {
+                    return { success: false, error: '无法获取文档对象' };
+                }
+
+                // 检查是否选中图表
+                const selected = doc.GetSelectedDrawings ? doc.GetSelectedDrawings() : null;
+                if (!selected || !selected.length) {
+                    return { success: false, error: '请先选中一个图表' };
+                }
+
+                const chart = selected[selected.length - 1];
+                console.log('✅ 发现选中的图表');
+
+                // 生成图表指纹（复用之前的逻辑）
+                function buildChartFingerprint(sel, doc) {
+                    var stableId = null;
+                    try { if (sel && typeof sel.GetId === 'function') stableId = sel.GetId(); } catch(e){}
+                    if (stableId) return 'id:' + stableId;
+
+                    var parts = [];
+
+                    // 获取图表类型
+                    try {
+                        var ch = (sel && typeof sel.GetChart === 'function') ? sel.GetChart() : null;
+                        if (ch && typeof ch.GetChartType === 'function') {
+                            var type = ch.GetChartType();
+                            if (type) parts.push('type:' + type);
+                        }
+                    } catch (e) {}
+
+                    // 祖先链
+                    try {
+                        var cur = sel, chain = [], hop = 0;
+                        while (cur && hop < 8) {
+                            chain.push(cur.GetClassType ? cur.GetClassType() : '?');
+                            if (!cur.GetParent) break;
+                            try { cur = cur.GetParent(); } catch (e) { break; }
+                            hop++;
+                        }
+                        if (chain.length) parts.push('chain:' + chain.slice(0,3).join('-'));
+                    } catch(_){}
+
+                    if (!parts.length) parts.push('rand:' + Date.now().toString(36));
+                    return parts.join('|');
+                }
+
+                // 检测图表类型
+                function detectChartType(chart) {
+                    try {
+                        var ch = (chart && typeof chart.GetChart === 'function') ? chart.GetChart() : null;
+                        if (ch && typeof ch.GetChartType === 'function') {
+                            return ch.GetChartType();
+                        }
+                        if (chart && typeof chart.GetChartType === 'function') {
+                            return chart.GetChartType();
+                        }
+                    } catch (e) {
+                        console.log('图表类型检测失败:', e);
+                    }
+                    return null;
+                }
+
+                // 检查绑定状态
+                function checkBindingStatus(doc, fingerprint) {
+                    try {
+                        var props = doc.GetCustomProperties();
+                        var key = 'chart-binding:' + fingerprint;
+                        var val = props.Get(key);
+                        if (val) {
+                            try { return JSON.parse(val); } catch(_){ return null; }
+                        }
+                    } catch(e) {}
+                    return null;
+                }
+
+                const fingerprint = buildChartFingerprint(chart, doc);
+                const chartType = detectChartType(chart);
+                const bindingData = checkBindingStatus(doc, fingerprint);
+
+                console.log('📊 图表类型:', chartType);
+                console.log('🔖 图表指纹:', fingerprint);
+
+                // 构建详细信息
+                const detailedInfo = {
+                    category: chartType ? (chartType.includes('bar') ? '柱状图' :
+                             chartType.includes('line') ? '线图' :
+                             chartType.includes('pie') ? '饼图' :
+                             chartType.includes('area') ? '面积图' : '其他') : '未知',
+                    specificType: chartType || '未知',
+                    description: chartType ? `检测到${chartType}类型图表` : '无法确定图表具体类型',
+                    confidence: chartType ? 0.9 : 0.3
+                };
+
+                return {
+                    success: true,
+                    chartType: chartType || 'unknown',
+                    fingerprint: fingerprint,
+                    timestamp: new Date().toLocaleString('zh-CN'),
+                    detailedInfo: detailedInfo,
+                    bindingInfo: {
+                        isBound: !!bindingData,
+                        dataType: bindingData?.data?.type || null,
+                        boundAt: bindingData?.createdAt || null
+                    }
+                };
+
+            }, { async: false });
+
+            console.log('📈 图表类型检测完成:', result);
+
+            if (result && result.success) {
+                return {
+                    success: true,
+                    data: result,
+                    message: '图表类型检测成功'
+                };
+            } else {
+                return {
+                    success: false,
+                    error: result?.error || '图表类型检测失败',
+                    data: {
+                        timestamp: new Date().toLocaleString('zh-CN')
+                    }
+                };
+            }
+
+        } catch (error) {
+            console.error('❌ 图表类型检测异常:', error);
+            return {
+                success: false,
+                error: '图表类型检测过程中发生异常: ' + error.message,
+                data: {
+                    timestamp: new Date().toLocaleString('zh-CN')
+                }
+            };
+        }
     }
 }

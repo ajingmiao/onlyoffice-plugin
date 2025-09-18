@@ -137,7 +137,6 @@ import { logger } from '../core/logger.js';
 
         // 核心：生成图表指纹
         function buildChartFingerprint(sel, doc) {
-          console.log('🔖 开始生成图表指纹');
           // 1) 优先稳定 ID
           var stableId = null;
           try { if (sel && typeof sel.GetId === 'function') stableId = sel.GetId(); } catch(e){ console.log('GetId失败:', e); }
