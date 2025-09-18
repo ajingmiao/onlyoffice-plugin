@@ -400,28 +400,61 @@ import { logger } from '../core/logger.js';
           _logger.error('方法2失败:', e2);
         }
 
-        // 方法3：直接执行函数（不通过 callCommand）
+        // 方法4：使用全局变量通信（绕过 callCommand 回调限制）
+        _logger.info('📞 方法4：使用全局变量通信...');
         try {
-          _logger.info('📞 方法3：直接执行沙箱函数...');
-          var directResult = (new Function(funcStr))();
-          _logger.info('📊 直接执行结果:', directResult);
-          if (directResult && directResult.ok) {
-            if (directResult.action === 'exists' && directResult.meta) {
-              safeCb({
-                type: 'chart-binding-exists',
-                meta: directResult.meta,
-                fingerprint: directResult.fingerprint
-              });
-            } else if (directResult.action === 'created' && directResult.meta) {
-              safeCb({
-                type: 'chart-binding-created',
-                meta: directResult.meta,
-                fingerprint: directResult.fingerprint
-              });
+          // 设置全局变量来接收沙箱结果
+          global.ChartDetectionResult = null;
+
+          // 修改沙箱代码，让它把结果写到全局变量
+          var modifiedFuncStr = funcStr.replace(
+            'return out;',
+            'try { if (typeof global !== "undefined") global.ChartDetectionResult = out; } catch(_){} return out;'
+          );
+
+          global.Asc.plugin.callCommand(new Function(modifiedFuncStr), function(info) {
+            _logger.info('🎉 方法4回调（如果执行）:', info);
+          });
+
+          // 轮询检查全局变量
+          var pollCount = 0;
+          var pollInterval = setInterval(function() {
+            pollCount++;
+            if (global.ChartDetectionResult) {
+              clearInterval(pollInterval);
+              var result = global.ChartDetectionResult;
+              _logger.info('📊 通过全局变量获取到结果:', result);
+              global.ChartDetectionResult = null; // 清理
+
+              if (result.ok) {
+                if (result.action === 'exists' && result.meta) {
+                  safeCb({
+                    type: 'chart-binding-exists',
+                    meta: result.meta,
+                    fingerprint: result.fingerprint
+                  });
+                } else if (result.action === 'created' && result.meta) {
+                  safeCb({
+                    type: 'chart-binding-created',
+                    meta: result.meta,
+                    fingerprint: result.fingerprint
+                  });
+                } else {
+                  safeCb({
+                    type: 'chart-detection-info',
+                    message: result.message || '图表检测完成',
+                    action: result.action
+                  });
+                }
+              }
+            } else if (pollCount > 20) { // 2秒后超时
+              clearInterval(pollInterval);
+              _logger.warn('⏰ 全局变量轮询超时');
             }
-          }
-        } catch (e3) {
-          _logger.error('方法3失败:', e3);
+          }, 100);
+
+        } catch (e4) {
+          _logger.error('方法4失败:', e4);
         }
 
       } catch (callError) {
