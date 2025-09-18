@@ -408,6 +408,7 @@ import { EditorService } from '../services/editor-service.js';
         }
 
         // 2) 未命中任何 CC → 使用新的简洁图表检测方式
+        _logger.info('🔍 准备开始图表检测流程...');
         try {
           _logger.info('🔍 开始图表检测...');
 
@@ -417,56 +418,89 @@ import { EditorService } from '../services/editor-service.js';
             return;
           }
 
-          // 使用 runInDoc 方式执行图表检测
-          _editorService.runInDoc(detectAndBindChart, {
-            async: false,
-            scope: { preferDrawing: !!isSelectionUse },
-            cb: function(result) {
-              _logger.info('🎉 图表检测回调执行:', result);
+          _logger.info('✅ EditorService 可用，准备执行图表检测...');
 
-              if (!result || !result.ok) {
+          // 使用全局回调方式执行图表检测
+          _logger.info('🚀 准备执行图表检测（全局回调方式）...');
+
+          // 设置全局回调函数
+          global._chartDetectionCallback = function(result) {
+            try {
+              _logger.info('🎉 全局回调被触发，结果:', result);
+
+              if (result && result.ok) {
+                // 根据检测结果触发相应事件
+                if (result.action === 'exists' && result.meta) {
+                  _logger.info('📊 触发 chart-binding-exists 事件');
+                  safeCb({
+                    type: 'chart-binding-exists',
+                    meta: result.meta,
+                    fingerprint: result.fingerprint
+                  });
+                } else if (result.action === 'created' && result.meta) {
+                  _logger.info('📊 触发 chart-binding-created 事件');
+                  safeCb({
+                    type: 'chart-binding-created',
+                    meta: result.meta,
+                    fingerprint: result.fingerprint
+                  });
+                } else if (result.action === 'text-click') {
+                  _logger.info('📝 检测到文本点击');
+                  safeCb({
+                    type: 'text-click',
+                    message: result.message
+                  });
+                } else if (result.action === 'no-user-chart') {
+                  _logger.info('⚠️ 未检测到选中的图表');
+                  safeCb({
+                    type: 'no-user-chart',
+                    message: result.message
+                  });
+                } else {
+                  safeCb({
+                    type: 'chart-detection-info',
+                    message: result.message || '图表检测完成',
+                    action: result.action
+                  });
+                }
+              } else {
                 _logger.warn('图表检测失败或无结果');
                 safeCb({ type: 'error', message: result?.message || '图表检测失败' });
-                return;
               }
-
-              // 根据检测结果触发相应事件
-              if (result.action === 'exists' && result.meta) {
-                safeCb({
-                  type: 'chart-binding-exists',
-                  meta: result.meta,
-                  fingerprint: result.fingerprint
-                });
-              } else if (result.action === 'created' && result.meta) {
-                safeCb({
-                  type: 'chart-binding-created',
-                  meta: result.meta,
-                  fingerprint: result.fingerprint
-                });
-              } else if (result.action === 'text-click') {
-                _logger.info('📝 检测到文本点击');
-                safeCb({
-                  type: 'text-click',
-                  message: result.message
-                });
-              } else if (result.action === 'no-user-chart') {
-                _logger.info('⚠️ 未检测到选中的图表');
-                safeCb({
-                  type: 'no-user-chart',
-                  message: result.message
-                });
-              } else {
-                safeCb({
-                  type: 'chart-detection-info',
-                  message: result.message || '图表检测完成',
-                  action: result.action
-                });
-              }
+            } catch (callbackError) {
+              _logger.error('🚨 全局回调执行出错:', callbackError);
             }
-          });
+          };
+
+          _logger.info('📝 全局回调函数已设置');
+
+          // 创建修改后的函数字符串，在最后调用全局回调
+          const funcStr = `
+            ${detectAndBindChart.toString()}
+
+            // 执行检测并获取结果
+            var result = detectAndBindChart();
+
+            // 调用全局回调
+            if (typeof window._chartDetectionCallback === 'function') {
+              window._chartDetectionCallback(result);
+            }
+
+            return result;
+          `;
+
+          _logger.info('🔧 函数字符串已生成，准备调用callCommand...');
+
+          // 直接使用callCommand执行修改后的函数
+          global.Asc = global.Asc || {};
+          global.Asc.scope = { preferDrawing: !!isSelectionUse };
+
+          _logger.info('⚡ 正在调用 callCommand...');
+          global.Asc.plugin.callCommand(new Function(funcStr), false);
+          _logger.info('✅ callCommand 调用完成');
 
         } catch (detectionError) {
-          _logger.error('🚨 图表检测失败:', detectionError);
+          _logger.error('🚨 图表检测流程出错:', detectionError);
           safeCb({ type: 'error', message: '图表检测失败: ' + detectionError.message });
         }
     }); // GetCurrentContentControlPr 回调结束
