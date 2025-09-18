@@ -1,4 +1,5 @@
 import { logger } from '../core/logger.js';
+import { EditorService } from '../services/editor-service.js';
 
 // =====================================================
 // ChartBinding - 使用"图表指纹 + 文档自定义属性"实现图表⇄绑定数据的关联
@@ -11,6 +12,7 @@ import { logger } from '../core/logger.js';
 
   // --- 事件回调（可选） ---
   var _onEvent = null; // function(payload) {}
+  var _editorService = null; // EditorService 实例
 
   function safeCb(payload) {
     try {
@@ -31,10 +33,324 @@ import { logger } from '../core/logger.js';
     if (typeof opts.onEvent === 'function') {
       _onEvent = opts.onEvent;
     }
+
+    // 初始化 EditorService
+    if (!_editorService) {
+      _editorService = new EditorService({
+        callCommand: function(fn, isAsync, callback) {
+          return global.Asc?.plugin?.callCommand?.(fn, isAsync, callback);
+        }
+      });
+    }
+
     // 注册点击事件（OnlyOffice 编辑器内部 onClick）
     global.Asc = global.Asc || {};
     global.Asc.plugin = global.Asc.plugin || {};
     global.Asc.plugin.event_onClick = handleOnClick;
+  }
+
+  // ===========================
+  // 图表检测工具函数
+  // ===========================
+  function getChartType(sel) {
+    try {
+      var ch = (sel && typeof sel.GetChart === 'function') ? sel.GetChart() : null;
+      if (ch && typeof ch.GetChartType === 'function') return ch.GetChartType();
+      if (sel && typeof sel.GetChartType === 'function') return sel.GetChartType();
+    } catch (e) {
+      console.log('getChartType失败:', e);
+    }
+    return null;
+  }
+
+  function findHostParagraph(el, maxHop) {
+    var hop = 0, cur = el;
+    while (cur && hop < (maxHop || 24)) {
+      if (cur.GetClassType && cur.GetClassType() === 'paragraph') return cur;
+      if (!cur.GetParent) break;
+      try { cur = cur.GetParent(); } catch (e) { break; }
+      hop++;
+    }
+    return null;
+  }
+
+  function collectAncestorChain(el, limit) {
+    var chain = [], hop = 0, cur = el;
+    while (cur && hop < (limit || 8)) {
+      chain.push(cur.GetClassType ? cur.GetClassType() : '?');
+      if (!cur.GetParent) break;
+      try { cur = cur.GetParent(); } catch (e) { break; }
+      hop++;
+    }
+    return chain;
+  }
+
+  // 核心：生成图表指纹
+  function buildChartFingerprint(sel, doc) {
+    console.log('🔖 开始生成图表指纹');
+
+    // 1) 优先稳定 ID
+    var stableId = null;
+    try { if (sel && typeof sel.GetId === 'function') stableId = sel.GetId(); } catch(e){ console.log('GetId失败:', e); }
+    try { if (!stableId && sel && typeof sel.GetInnerId === 'function') stableId = sel.GetInnerId(); } catch(e){ console.log('GetInnerId失败:', e); }
+    try { if (!stableId && sel && typeof sel.GetRId === 'function') stableId = sel.GetRId(); } catch(e){ console.log('GetRId失败:', e); }
+    if (stableId) {
+      console.log('✅ 使用稳定ID:', stableId);
+      return 'id:' + stableId;
+    }
+
+    var parts = [];
+
+    // 2.1 类型
+    var type = getChartType(sel);
+    if (type) parts.push('type:' + type);
+
+    // 2.2 祖先链（前3级）
+    try {
+      var anc = collectAncestorChain(sel, 8);
+      if (anc && anc.length) parts.push('chain:' + anc.slice(0,3).join('-'));
+    } catch(_){ console.log('祖先链失败'); }
+
+    // 2.3 宿主段落文本哈希（前20字符）
+    try {
+      var host = findHostParagraph(sel, 24);
+      if (host && typeof host.GetText === 'function') {
+        var t = '';
+        try { t = host.GetText() || ''; } catch(_){}
+        if (t) parts.push('text:' + t.substring(0,20).replace(/\s+/g, '_'));
+      }
+    } catch(_){ console.log('宿主段落失败'); }
+
+    // 2.4 在全部绘图对象里的大致序位百分比
+    try {
+      var all = doc.GetAllDrawingObjects ? doc.GetAllDrawingObjects() : null;
+      if (all && all.length) {
+        for (var i=0; i<all.length; i++) {
+          if (all[i] === sel) {
+            var p = Math.floor((i / all.length) * 100);
+            parts.push('pos:' + p);
+            break;
+          }
+        }
+      }
+    } catch(_){ console.log('绘图对象位置失败'); }
+
+    if (!parts.length) parts.push('rand:' + Date.now().toString(36));
+    var fingerprint = parts.join('|');
+    console.log('🔖 生成指纹:', fingerprint);
+    return fingerprint;
+  }
+
+  // 文档自定义属性读写
+  function getBindingByFingerprint(doc, fp) {
+    try {
+      var props = doc.GetCustomProperties();
+      var key = 'chart-binding:' + fp;
+      var val = props.Get(key);
+      if (!val) return null;
+      try { return JSON.parse(val); } catch(_){ return null; }
+    } catch(e){ console.log('读取绑定失败:', e); return null; }
+  }
+
+  function setBindingByFingerprint(doc, fp, meta) {
+    try {
+      var props = doc.GetCustomProperties();
+      var key = 'chart-binding:' + fp;
+      props.Add(key, JSON.stringify(meta)); // 存在同名时覆盖
+    } catch(e){ console.log('写入绑定失败:', e); }
+  }
+
+  // 图表检测主函数
+  function detectAndBindChart() {
+    console.log('🏁 图表检测开始执行');
+
+    // 从 Asc.scope 中获取参数
+    var isSelectionUse = false;
+    try {
+      isSelectionUse = !!(Asc && Asc.scope && Asc.scope.preferDrawing);
+    } catch(e) {}
+
+    // 在沙箱内部重新定义工具函数
+    function getChartType(sel) {
+      try {
+        var ch = (sel && typeof sel.GetChart === 'function') ? sel.GetChart() : null;
+        if (ch && typeof ch.GetChartType === 'function') return ch.GetChartType();
+        if (sel && typeof sel.GetChartType === 'function') return sel.GetChartType();
+      } catch (e) {
+        console.log('getChartType失败:', e);
+      }
+      return null;
+    }
+
+    function findHostParagraph(el, maxHop) {
+      var hop = 0, cur = el;
+      while (cur && hop < (maxHop || 24)) {
+        if (cur.GetClassType && cur.GetClassType() === 'paragraph') return cur;
+        if (!cur.GetParent) break;
+        try { cur = cur.GetParent(); } catch (e) { break; }
+        hop++;
+      }
+      return null;
+    }
+
+    function collectAncestorChain(el, limit) {
+      var chain = [], hop = 0, cur = el;
+      while (cur && hop < (limit || 8)) {
+        chain.push(cur.GetClassType ? cur.GetClassType() : '?');
+        if (!cur.GetParent) break;
+        try { cur = cur.GetParent(); } catch (e) { break; }
+        hop++;
+      }
+      return chain;
+    }
+
+    function buildChartFingerprint(sel, doc) {
+      console.log('🔖 开始生成图表指纹');
+
+      // 1) 优先稳定 ID
+      var stableId = null;
+      try { if (sel && typeof sel.GetId === 'function') stableId = sel.GetId(); } catch(e){ console.log('GetId失败:', e); }
+      try { if (!stableId && sel && typeof sel.GetInnerId === 'function') stableId = sel.GetInnerId(); } catch(e){ console.log('GetInnerId失败:', e); }
+      try { if (!stableId && sel && typeof sel.GetRId === 'function') stableId = sel.GetRId(); } catch(e){ console.log('GetRId失败:', e); }
+      if (stableId) {
+        console.log('✅ 使用稳定ID:', stableId);
+        return 'id:' + stableId;
+      }
+
+      var parts = [];
+
+      // 2.1 类型
+      var type = getChartType(sel);
+      if (type) parts.push('type:' + type);
+
+      // 2.2 祖先链（前3级）
+      try {
+        var anc = collectAncestorChain(sel, 8);
+        if (anc && anc.length) parts.push('chain:' + anc.slice(0,3).join('-'));
+      } catch(_){ console.log('祖先链失败'); }
+
+      // 2.3 宿主段落文本哈希（前20字符）
+      try {
+        var host = findHostParagraph(sel, 24);
+        if (host && typeof host.GetText === 'function') {
+          var t = '';
+          try { t = host.GetText() || ''; } catch(_){}
+          if (t) parts.push('text:' + t.substring(0,20).replace(/\s+/g, '_'));
+        }
+      } catch(_){ console.log('宿主段落失败'); }
+
+      // 2.4 在全部绘图对象里的大致序位百分比
+      try {
+        var all = doc.GetAllDrawingObjects ? doc.GetAllDrawingObjects() : null;
+        if (all && all.length) {
+          for (var i=0; i<all.length; i++) {
+            if (all[i] === sel) {
+              var p = Math.floor((i / all.length) * 100);
+              parts.push('pos:' + p);
+              break;
+            }
+          }
+        }
+      } catch(_){ console.log('绘图对象位置失败'); }
+
+      if (!parts.length) parts.push('rand:' + Date.now().toString(36));
+      var fingerprint = parts.join('|');
+      console.log('🔖 生成指纹:', fingerprint);
+      return fingerprint;
+    }
+
+    function getBindingByFingerprint(doc, fp) {
+      try {
+        var props = doc.GetCustomProperties();
+        var key = 'chart-binding:' + fp;
+        var val = props.Get(key);
+        if (!val) return null;
+        try { return JSON.parse(val); } catch(_){ return null; }
+      } catch(e){ console.log('读取绑定失败:', e); return null; }
+    }
+
+    function setBindingByFingerprint(doc, fp, meta) {
+      try {
+        var props = doc.GetCustomProperties();
+        var key = 'chart-binding:' + fp;
+        props.Add(key, JSON.stringify(meta)); // 存在同名时覆盖
+      } catch(e){ console.log('写入绑定失败:', e); }
+    }
+
+    var doc = Api.GetDocument();
+    if (!doc) {
+      console.log('❌ 无法获取文档对象');
+      return { ok: false, action: 'error', message: '无法获取文档对象' };
+    }
+
+    // 先看是否选中图表
+    console.log('🎯 检查选中的绘图对象...');
+    var selected = null;
+    try {
+      selected = doc.GetSelectedDrawings ? doc.GetSelectedDrawings() : null;
+    } catch(e){
+      console.log('GetSelectedDrawings失败:', e);
+    }
+
+    if (!selected || !selected.length) {
+      // 没选中图表 → 再看文本选区（避免误触）
+      var range = null;
+      try { range = doc.GetRangeBySelect && doc.GetRangeBySelect(); } catch(_){}
+      if (range) {
+        return { ok: true, action: 'text-click', message: '点击文本区域，跳过图表绑定' };
+      }
+      return { ok: true, action: 'no-user-chart', message: '未检测到用户选中的图表' };
+    }
+
+    console.log('✅ 发现选中的图表，开始处理...');
+    var sel = selected[selected.length - 1];
+    var fp = buildChartFingerprint(sel, doc);
+
+    console.log('🔍 检查是否已存在绑定...');
+    var existed = getBindingByFingerprint(doc, fp);
+    if (existed) {
+      console.log('✅ 已存在绑定，数据详情:', JSON.stringify(existed, null, 2));
+      console.log('📊 绑定数据解析:');
+      console.log('  - 图表ID:', existed.chartId);
+      console.log('  - 创建时间:', existed.createdAt);
+      console.log('  - 图表类型:', existed.chartType);
+      console.log('  - 指纹:', existed.fingerprint);
+      if (existed.datasetId) console.log('  - 数据集ID:', existed.datasetId);
+      if (existed.mapping) console.log('  - 数据映射:', JSON.stringify(existed.mapping));
+
+      return {
+        ok: true,
+        action: 'exists',
+        meta: existed,
+        fingerprint: fp,
+        message: '已存在图表绑定（自定义属性）'
+      };
+    }
+
+    // 新建并写入
+    console.log('🆕 创建新的绑定...');
+    var meta = {
+      chartId: 'chart-' + Date.now().toString(36) + '-' + Math.floor(Math.random()*1e6).toString(36),
+      createdAt: new Date().toISOString(),
+      chartType: getChartType(sel),
+      fingerprint: fp
+    };
+
+    setBindingByFingerprint(doc, fp, meta);
+    console.log('✅ 图表检测执行完成，新建绑定数据详情:', JSON.stringify(meta, null, 2));
+    console.log('📊 新建绑定数据解析:');
+    console.log('  - 图表ID:', meta.chartId);
+    console.log('  - 创建时间:', meta.createdAt);
+    console.log('  - 图表类型:', meta.chartType);
+    console.log('  - 指纹:', meta.fingerprint);
+
+    return {
+      ok: true,
+      action: 'created',
+      meta: meta,
+      fingerprint: fp,
+      message: '已写入绑定到文档自定义属性'
+    };
   }
 
   // ===========================
@@ -88,349 +404,68 @@ import { logger } from '../core/logger.js';
           _logger.error('处理内容控件时出错:', ccError);
         }
 
-        // 2) 未命中任何 CC → 进入沙箱：识别图表并进行绑定（文档自定义属性）
+        // 2) 未命中任何 CC → 使用新的简洁图表检测方式
         try {
-          _logger.info('🔍 准备执行图表检测沙箱代码...');
-          global.Asc.scope = global.Asc.scope || {};
-          global.Asc.scope.preferDrawing = !!isSelectionUse; // 仅作为参考
-        } catch (_){}
+          _logger.info('🔍 开始图表检测...');
 
-        var funcStr = (function () {/*
-        // =============== 沙箱开始 ===============
-        console.log('🏁 沙箱代码开始执行');
-
-        var out = { ok: true, action: 'none', message: '', meta: null, fingerprint: null, logs: [] };
-        function dbg(){ try { out.logs.push(Array.prototype.join.call(arguments, ' ')); } catch (_e){} }
-
-        function getDoc() { try { return Api.GetDocument(); } catch(e){ console.log('getDoc失败:', e); return null; } }
-
-        function getChartType(sel) {
-          try {
-            var ch = (sel && typeof sel.GetChart === 'function') ? sel.GetChart() : null;
-            if (ch && typeof ch.GetChartType === 'function') return ch.GetChartType();
-            if (sel && typeof sel.GetChartType === 'function') return sel.GetChartType();
-          } catch (e) { console.log('getChartType失败:', e); }
-          return null;
-        }
-
-        function findHostParagraph(el, maxHop) {
-          var hop = 0, cur = el;
-          while (cur && hop < (maxHop || 24)) {
-            if (cur.GetClassType && cur.GetClassType() === 'paragraph') return cur;
-            if (!cur.GetParent) break;
-            try { cur = cur.GetParent(); } catch (e) { break; }
-            hop++;
-          }
-          return null;
-        }
-
-        function collectAncestorChain(el, limit) {
-          var chain = [], hop = 0, cur = el;
-          while (cur && hop < (limit || 8)) {
-            chain.push(cur.GetClassType ? cur.GetClassType() : '?');
-            if (!cur.GetParent) break;
-            try { cur = cur.GetParent(); } catch (e) { break; }
-            hop++;
-          }
-          return chain;
-        }
-
-        // 核心：生成图表指纹
-        function buildChartFingerprint(sel, doc) {
-          console.log('🔖 开始生成图表指纹');
-          // 1) 优先稳定 ID
-          var stableId = null;
-          try { if (sel && typeof sel.GetId === 'function') stableId = sel.GetId(); } catch(e){ console.log('GetId失败:', e); }
-          try { if (!stableId && sel && typeof sel.GetInnerId === 'function') stableId = sel.GetInnerId(); } catch(e){ console.log('GetInnerId失败:', e); }
-          try { if (!stableId && sel && typeof sel.GetRId === 'function') stableId = sel.GetRId(); } catch(e){ console.log('GetRId失败:', e); }
-          if (stableId) {
-            console.log('✅ 使用稳定ID:', stableId);
-            return 'id:' + stableId;
+          if (!_editorService) {
+            _logger.error('❌ EditorService 未初始化');
+            safeCb({ type: 'error', message: 'EditorService 未初始化' });
+            return;
           }
 
-          var parts = [];
+          // 使用 runInDoc 方式执行图表检测
+          _editorService.runInDoc(detectAndBindChart, {
+            async: false,
+            scope: { preferDrawing: !!isSelectionUse },
+            cb: function(result) {
+              _logger.info('🎉 图表检测回调执行:', result);
 
-          // 2.1 类型
-          var type = getChartType(sel);
-          if (type) parts.push('type:' + type);
-
-          // 2.2 祖先链（前3级）
-          try {
-            var anc = collectAncestorChain(sel, 8);
-            if (anc && anc.length) parts.push('chain:' + anc.slice(0,3).join('-'));
-          } catch(_){ console.log('祖先链失败'); }
-
-          // 2.3 宿主段落文本哈希（前20字符）
-          try {
-            var host = findHostParagraph(sel, 24);
-            if (host && typeof host.GetText === 'function') {
-              var t = '';
-              try { t = host.GetText() || ''; } catch(_){}
-              if (t) parts.push('text:' + t.substring(0,20).replace(/\s+/g, '_'));
-            }
-          } catch(_){ console.log('宿主段落失败'); }
-
-          // 2.4 在全部绘图对象里的大致序位百分比
-          try {
-            var all = doc.GetAllDrawingObjects ? doc.GetAllDrawingObjects() : null;
-            if (all && all.length) {
-              for (var i=0; i<all.length; i++) {
-                if (all[i] === sel) {
-                  var p = Math.floor((i / all.length) * 100);
-                  parts.push('pos:' + p);
-                  break;
-                }
+              if (!result || !result.ok) {
+                _logger.warn('图表检测失败或无结果');
+                safeCb({ type: 'error', message: result?.message || '图表检测失败' });
+                return;
               }
-            }
-          } catch(_){ console.log('绘图对象位置失败'); }
 
-          if (!parts.length) parts.push('rand:' + Date.now().toString(36));
-          var fingerprint = parts.join('|');
-          console.log('🔖 生成指纹:', fingerprint);
-          return fingerprint;
-        }
-
-        // 文档自定义属性读/写
-        function getBindingByFingerprint(doc, fp) {
-          try {
-            var props = doc.GetCustomProperties();
-            var key = 'chart-binding:' + fp;
-            var val = props.Get(key);
-            if (!val) return null;
-            try { return JSON.parse(val); } catch(_){ return null; }
-          } catch(e){ console.log('读取绑定失败:', e); return null; }
-        }
-        function setBindingByFingerprint(doc, fp, meta) {
-          try {
-            var props = doc.GetCustomProperties();
-            var key = 'chart-binding:' + fp;
-            props.Add(key, JSON.stringify(meta)); // 存在同名时覆盖
-          } catch(e){ console.log('写入绑定失败:', e); }
-        }
-
-        var doc = getDoc();
-        if (!doc) {
-          console.log('❌ 无法获取文档对象');
-          out.ok = false;
-          out.action = 'error';
-          out.message = '无法获取文档对象';
-          return out;
-        }
-
-        // 先看是否选中图表
-        console.log('🎯 检查选中的绘图对象...');
-        var selected = null;
-        try { selected = doc.GetSelectedDrawings ? doc.GetSelectedDrawings() : null; } catch(e){ console.log('GetSelectedDrawings失败:', e); }
-        dbg('🎯 选中的绘图对象数量:', selected ? selected.length : 0);
-
-        if (!selected || !selected.length) {
-          // 没选中图表 → 再看文本选区（避免误触）
-          var range = null;
-          try { range = doc.GetRangeBySelect && doc.GetRangeBySelect(); } catch(_){}
-          if (range) {
-            out.action = 'text-click';
-            out.message = '点击文本区域，跳过图表绑定';
-            console.log('📝 检测到文本点击');
-            return out;
-          }
-          out.action = 'no-user-chart';
-          out.message = '未检测到用户选中的图表';
-          console.log('⚠️ 未检测到选中的图表');
-          return out;
-        }
-
-        console.log('✅ 发现选中的图表，开始处理...');
-        var sel = selected[selected.length - 1];
-        var fp = buildChartFingerprint(sel, doc);
-        out.fingerprint = fp;
-        dbg('🔖 指纹:', fp);
-
-        console.log('🔍 检查是否已存在绑定...');
-        var existed = getBindingByFingerprint(doc, fp);
-        if (existed) {
-          out.action = 'exists';
-          out.meta = existed;
-          out.message = '已存在图表绑定（自定义属性）';
-
-          console.log('沙箱已经绑定的返回数据对象...',out);
-          return out;
-        }
-
-        // 新建并写入
-        console.log('🆕 创建新的绑定...');
-        var meta = {
-          chartId: 'chart-' + Date.now().toString(36) + '-' + Math.floor(Math.random()*1e6).toString(36),
-          createdAt: new Date().toISOString(),
-          chartType: (function(){
-            try {
-              var c = (sel && typeof sel.GetChart === 'function') ? sel.GetChart() : null;
-              if (c && typeof c.GetChartType === 'function') return c.GetChartType();
-              if (sel && typeof sel.GetChartType === 'function') return sel.GetChartType();
-            } catch(e){ console.log('获取图表类型失败:', e); }
-            return null;
-          })(),
-          fingerprint: fp
-          // 你可以在这里扩展你的业务字段，比如 bindingPayload / datasetId / mapping 等
-        };
-        setBindingByFingerprint(doc, fp, meta);
-        console.log('沙箱中获取到的图表ID...',meta.chartId);
-        console.log('沙箱中获取到的图表类型...',meta.chartType);
-
-        // 由于 callCommand 回调不可靠，我们在沙箱内部直接触发事件
-        out.action = 'created';
-        out.meta = meta;
-        out.message = '已写入绑定到文档自定义属性';
-        console.log('✅ 沙箱代码执行完成，准备返回结果');
-
-        // 在沙箱内部直接通知外部
-        try {
-          if (typeof window !== 'undefined' && window.ChartBindingNotify) {
-            window.ChartBindingNotify({
-              type: 'chart-binding-created',
-              meta: meta,
-              fingerprint: fp
-            });
-            console.log('✅ 已通过 ChartBindingNotify 发送创建事件');
-          }
-        } catch (notifyError) {
-          console.log('⚠️ ChartBindingNotify 调用失败:', notifyError);
-        }
-
-        return out;
-        // =============== 沙箱结束 ===============
-      */}).toString().replace(/^function\s*\(\)\s*\{\/\*|\*\/\}\s*$/g, '');
-
-      try {
-        // 设置沙箱内部可以直接调用的通知函数
-        window.ChartBindingNotify = function(payload) {
-          _logger.info('📨 沙箱内部通知:', payload);
-          safeCb(payload);
-        };
-
-        // 先测试沙箱代码是否有语法问题
-        try {
-          var testFunc = new Function(funcStr);
-          _logger.info('✅ 沙箱代码语法检查通过');
-        } catch (syntaxError) {
-          _logger.error('🚨 沙箱代码语法错误:', syntaxError.message);
-          _logger.info('funcStr 前100字符:', funcStr.substring(0, 100));
-          safeCb({ type: 'error', message: '沙箱代码语法错误: ' + syntaxError.message });
-          return;
-        }
-
-        // 尝试多种 callCommand 调用方式来解决回调问题
-        _logger.info('📞 尝试不同的 callCommand 调用方式...');
-
-        // 方法1：标准调用（你说这个不回调）
-        try {
-          global.Asc.plugin.callCommand(new Function(funcStr), function(info) {
-            _logger.info('🎉 方法1回调执行:', info);
-            if (info && info.ok) {
-              _logger.info('📊 图表检测成功，通知外部');
-              if (info.action === 'exists' && info.meta) {
+              // 根据检测结果触发相应事件
+              if (result.action === 'exists' && result.meta) {
                 safeCb({
                   type: 'chart-binding-exists',
-                  meta: info.meta,
-                  fingerprint: info.fingerprint
+                  meta: result.meta,
+                  fingerprint: result.fingerprint
                 });
-              } else if (info.action === 'created' && info.meta) {
+              } else if (result.action === 'created' && result.meta) {
                 safeCb({
                   type: 'chart-binding-created',
-                  meta: info.meta,
-                  fingerprint: info.fingerprint
+                  meta: result.meta,
+                  fingerprint: result.fingerprint
                 });
-              }
-            }
-          });
-        } catch (e1) {
-          _logger.error('方法1失败:', e1);
-        }
-
-        // 方法2：异步调用
-        try {
-          global.Asc.plugin.callCommand(new Function(funcStr), function(info) {
-            _logger.info('🎉 方法2异步回调执行:', info);
-            if (info && info.ok) {
-              if (info.action === 'exists' && info.meta) {
+              } else if (result.action === 'text-click') {
+                _logger.info('📝 检测到文本点击');
                 safeCb({
-                  type: 'chart-binding-exists',
-                  meta: info.meta,
-                  fingerprint: info.fingerprint
+                  type: 'text-click',
+                  message: result.message
                 });
-              } else if (info.action === 'created' && info.meta) {
+              } else if (result.action === 'no-user-chart') {
+                _logger.info('⚠️ 未检测到选中的图表');
                 safeCb({
-                  type: 'chart-binding-created',
-                  meta: info.meta,
-                  fingerprint: info.fingerprint
+                  type: 'no-user-chart',
+                  message: result.message
+                });
+              } else {
+                safeCb({
+                  type: 'chart-detection-info',
+                  message: result.message || '图表检测完成',
+                  action: result.action
                 });
               }
             }
           });
-        } catch (e2) {
-          _logger.error('方法2失败:', e2);
+
+        } catch (detectionError) {
+          _logger.error('🚨 图表检测失败:', detectionError);
+          safeCb({ type: 'error', message: '图表检测失败: ' + detectionError.message });
         }
-
-        // 方法4：使用全局变量通信（绕过 callCommand 回调限制）
-        _logger.info('📞 方法4：使用全局变量通信...');
-        try {
-          // 设置全局变量来接收沙箱结果
-          global.ChartDetectionResult = null;
-
-          // 修改沙箱代码，让它把结果写到全局变量
-          var modifiedFuncStr = funcStr.replace(
-            'return out;',
-            'try { if (typeof global !== "undefined") global.ChartDetectionResult = out; } catch(_){} return out;'
-          );
-
-          global.Asc.plugin.callCommand(new Function(modifiedFuncStr), function(info) {
-            _logger.info('🎉 方法4回调（如果执行）:', info);
-          });
-
-          // 轮询检查全局变量
-          var pollCount = 0;
-          var pollInterval = setInterval(function() {
-            pollCount++;
-            if (global.ChartDetectionResult) {
-              clearInterval(pollInterval);
-              var result = global.ChartDetectionResult;
-              _logger.info('📊 通过全局变量获取到结果:', result);
-              global.ChartDetectionResult = null; // 清理
-
-              if (result.ok) {
-                if (result.action === 'exists' && result.meta) {
-                  safeCb({
-                    type: 'chart-binding-exists',
-                    meta: result.meta,
-                    fingerprint: result.fingerprint
-                  });
-                } else if (result.action === 'created' && result.meta) {
-                  safeCb({
-                    type: 'chart-binding-created',
-                    meta: result.meta,
-                    fingerprint: result.fingerprint
-                  });
-                } else {
-                  safeCb({
-                    type: 'chart-detection-info',
-                    message: result.message || '图表检测完成',
-                    action: result.action
-                  });
-                }
-              }
-            } else if (pollCount > 20) { // 2秒后超时
-              clearInterval(pollInterval);
-              _logger.warn('⏰ 全局变量轮询超时');
-            }
-          }, 100);
-
-        } catch (e4) {
-          _logger.error('方法4失败:', e4);
-        }
-
-      } catch (callError) {
-        _logger.error('🚨 执行失败:', callError);
-        safeCb({ type: 'error', message: '执行失败: ' + callError.message });
-      }
     }); // GetCurrentContentControlPr 回调结束
     } catch (executeError) {
       _logger.error('🚨 executeMethod 调用失败:', executeError);
