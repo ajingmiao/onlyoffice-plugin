@@ -99,6 +99,13 @@ import { logger } from '../core/logger.js';
         var funcStr = (function () {/*
         // =============== 沙箱开始 ===============
         console.log('🏁 沙箱代码开始执行');
+
+        // 测试沙箱环境的能力
+        console.log('🧪 测试沙箱环境:');
+        console.log('  typeof window:', typeof window);
+        console.log('  typeof global:', typeof global);
+        console.log('  typeof this:', typeof this);
+
         var out = { ok: true, action: 'none', message: '', meta: null, fingerprint: null, logs: [] };
         function dbg(){ try { out.logs.push(Array.prototype.join.call(arguments, ' ')); } catch (_e){} }
 
@@ -253,6 +260,29 @@ import { logger } from '../core/logger.js';
           out.meta = existed;
           out.message = '已存在图表绑定（自定义属性）';
           console.log('✅ 发现已存在的绑定');
+
+          // 在沙箱内部直接通知外部
+          try {
+            console.log('🔗 尝试沙箱内部通知:');
+            console.log('  typeof window:', typeof window);
+            console.log('  window.ChartBindingNotify:', typeof (typeof window !== 'undefined' ? window.ChartBindingNotify : 'undefined'));
+
+            if (typeof window !== 'undefined' && window.ChartBindingNotify) {
+              window.ChartBindingNotify({
+                type: 'chart-binding-exists',
+                meta: existed,
+                fingerprint: fp
+              });
+              console.log('✅ 已通过 ChartBindingNotify 发送存在事件');
+            } else {
+              console.log('❌ 沙箱内部无法访问 window.ChartBindingNotify');
+              console.log('  window:', typeof window);
+              console.log('  ChartBindingNotify:', typeof window !== 'undefined' ? typeof window.ChartBindingNotify : 'window不存在');
+            }
+          } catch (notifyError) {
+            console.log('⚠️ ChartBindingNotify 调用失败:', notifyError);
+          }
+
           return out;
         }
 
@@ -275,14 +305,36 @@ import { logger } from '../core/logger.js';
         setBindingByFingerprint(doc, fp, meta);
         console.log('沙箱中获取到的图表类型...',meta.chartType);
 
-        // 由于 callCommand 回调现在可以正常工作，我们简化通信机制
+        // 由于 callCommand 回调不可靠，我们在沙箱内部直接触发事件
+        out.action = 'created';
+        out.meta = meta;
+        out.message = '已写入绑定到文档自定义属性';
         console.log('✅ 沙箱代码执行完成，准备返回结果');
+
+        // 在沙箱内部直接通知外部
+        try {
+          if (typeof window !== 'undefined' && window.ChartBindingNotify) {
+            window.ChartBindingNotify({
+              type: 'chart-binding-created',
+              meta: meta,
+              fingerprint: fp
+            });
+            console.log('✅ 已通过 ChartBindingNotify 发送创建事件');
+          }
+        } catch (notifyError) {
+          console.log('⚠️ ChartBindingNotify 调用失败:', notifyError);
+        }
+
         return out;
         // =============== 沙箱结束 ===============
       */}).toString().replace(/^function\s*\(\)\s*\{\/\*|\*\/\}\s*$/g, '');
 
       try {
-        _logger.info('🚀 即将执行 callCommand，funcStr 长度:', funcStr.length);
+        // 设置沙箱内部可以直接调用的通知函数
+        window.ChartBindingNotify = function(payload) {
+          _logger.info('📨 沙箱内部通知:', payload);
+          safeCb(payload);
+        };
 
         // 先测试沙箱代码是否有语法问题
         try {
@@ -295,44 +347,10 @@ import { logger } from '../core/logger.js';
           return;
         }
 
-        // 由于复杂沙箱代码可能有问题，我们使用混合方式：
-        // 1. 尝试完整沙箱逻辑
-        // 2. 如果失败，降级到简化逻辑
-        _logger.info('🎯 尝试完整沙箱绑定逻辑...');
-
-        var callbackExecuted = false;
-
-        // 超时机制（防止 callCommand 卡死）
-        var timeoutId = setTimeout(function() {
-          if (!callbackExecuted) {
-            _logger.warn('⏰ callCommand 回调超时');
-            safeCb({ type: 'error', message: 'callCommand 回调超时' });
-          }
-        }, 10000); // 10秒超时
-
+        _logger.info('📞 启动沙箱（期待内部通知）...');
         global.Asc.plugin.callCommand(new Function(funcStr), function(info) {
-          _logger.info('📨 callCommand 回调执行，收到结果:', info);
-          callbackExecuted = true;
-          clearTimeout(timeoutId);
-          clearInterval(pollInterval);
-          window.removeEventListener('message', messageHandler);
-
-          if (!info || info.ok === false) {
-            _logger.warn('callCommand 回调失败或返回无效结果:', info && info.message);
-            return;
-          }
-
-          _logger.info('✅ callCommand 回调成功，处理结果:', info);
-
-          if (info.action === 'created') {
-            safeCb({ type: 'chart-binding-created', meta: info.meta, fingerprint: info.fingerprint });
-          } else if (info.action === 'exists') {
-            safeCb({ type: 'chart-binding-exists', meta: info.meta, fingerprint: info.fingerprint });
-          } else if (info.action === 'no-user-chart' || info.action === 'text-click') {
-            safeCb({ type: info.action, message: info.message });
-          } else {
-            safeCb({ type: info.action || 'info', meta: info.meta, fingerprint: info.fingerprint, message: info.message });
-          }
+          // 这个回调可能永远不会执行，但我们记录一下以防万一
+          _logger.info('🎉 意外！callCommand 回调执行了:', info);
         });
 
       } catch (callError) {
