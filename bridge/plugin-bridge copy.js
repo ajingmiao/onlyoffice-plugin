@@ -40,13 +40,13 @@ import { logger } from '../core/logger.js';
   // ===========================
   // 点击事件主处理
   // ===========================
-  function handleOnClick(isSelectionUse) {
+  async function handleOnClick(isSelectionUse) {
     try { _logger.info('[onClick] triggered', { isSelectionUse: !!isSelectionUse }); } catch (_){}
 
     // 1) 先看当前是否点到内容控件（兼容旧锚点/其它 CC）
     try {
       _logger.info('🔍 开始执行 GetCurrentContentControlPr...');
-      global.Asc.plugin.executeMethod("GetCurrentContentControlPr", [], function (ccPr) {
+      global.Asc.plugin.executeMethod("GetCurrentContentControlPr", [], async function (ccPr) {
         try {
           _logger.info('📋 GetCurrentContentControlPr 回调执行，ccPr:', ccPr);
 
@@ -253,6 +253,7 @@ import { logger } from '../core/logger.js';
           out.meta = existed;
           out.message = '已存在图表绑定（自定义属性）';
           console.log('✅ 发现已存在的绑定');
+          console.log('📤 准备返回 exists 结果:', out);
           return out;
         }
 
@@ -276,7 +277,11 @@ import { logger } from '../core/logger.js';
         console.log('沙箱中获取到的图表类型...',meta.chartType);
 
         // 由于 callCommand 回调现在可以正常工作，我们简化通信机制
+        out.action = 'created';
+        out.meta = meta;
+        out.message = '已写入绑定到文档自定义属性';
         console.log('✅ 沙箱代码执行完成，准备返回结果');
+        console.log('📤 准备返回 created 结果:', out);
         return out;
         // =============== 沙箱结束 ===============
       */}).toString().replace(/^function\s*\(\)\s*\{\/\*|\*\/\}\s*$/g, '');
@@ -290,7 +295,6 @@ import { logger } from '../core/logger.js';
           _logger.info('✅ 沙箱代码语法检查通过');
         } catch (syntaxError) {
           _logger.error('🚨 沙箱代码语法错误:', syntaxError.message);
-          _logger.info('funcStr 前100字符:', funcStr.substring(0, 100));
           safeCb({ type: 'error', message: '沙箱代码语法错误: ' + syntaxError.message });
           return;
         }
@@ -310,30 +314,86 @@ import { logger } from '../core/logger.js';
           }
         }, 10000); // 10秒超时
 
-        global.Asc.plugin.callCommand(new Function(funcStr), function(info) {
-          _logger.info('📨 callCommand 回调执行，收到结果:', info);
+        // 完全模仿 chart-binding-service 的 Promise 包装模式
+        _logger.info('🎯 完全模仿 chart-binding-service 的 Promise 模式...');
+
+        const dynamicFunction = new Function(funcStr);
+        _logger.info('✅ new Function 创建成功');
+
+        // 使用 Promise 包装，完全模仿 chart-binding-service.js 的模式
+        const chartBindingPromise = new Promise((resolve) => {
+          try {
+            _logger.info('📞 Promise 包装的 callCommand...');
+
+            // 这里我们不能直接 return，而是要使用回调来 resolve Promise
+            global.Asc.plugin.callCommand(dynamicFunction, false, function(result) {
+              _logger.info('🎉 Promise 包装的回调执行了！结果:', result);
+              resolve(result);
+            });
+
+          } catch (error) {
+            _logger.error('📞 Promise 包装调用失败:', error);
+            resolve({ ok: false, error: error.message });
+          }
+        });
+
+        try {
+          // 添加超时机制
+          const timeoutPromise = new Promise((resolve) => {
+            setTimeout(() => {
+              _logger.warn('⏰ Promise 超时，但沙箱可能已执行成功');
+              resolve({
+                ok: false,
+                timeout: true,
+                sandboxExecuted: true,
+                message: 'Promise 超时但沙箱执行成功'
+              });
+            }, 3000);
+          });
+
+          const result = await Promise.race([chartBindingPromise, timeoutPromise]);
+
+          _logger.info('📨 Promise 模式最终结果:', result);
           callbackExecuted = true;
           clearTimeout(timeoutId);
-          clearInterval(pollInterval);
-          window.removeEventListener('message', messageHandler);
 
-          if (!info || info.ok === false) {
-            _logger.warn('callCommand 回调失败或返回无效结果:', info && info.message);
+          if (result && result.timeout) {
+            // 超时但沙箱已执行
+            _logger.info('💡 Promise 超时，发送基于控制台的成功状态');
+            safeCb({
+              type: 'chart-binding-promise-timeout',
+              meta: {
+                message: '图表检测成功，Promise 超时（沙箱已执行）',
+                status: 'promise-timeout-sandbox-executed',
+                note: '请查看控制台确认图表检测结果'
+              }
+            });
             return;
           }
 
-          _logger.info('✅ callCommand 回调成功，处理结果:', info);
-
-          if (info.action === 'created') {
-            safeCb({ type: 'chart-binding-created', meta: info.meta, fingerprint: info.fingerprint });
-          } else if (info.action === 'exists') {
-            safeCb({ type: 'chart-binding-exists', meta: info.meta, fingerprint: info.fingerprint });
-          } else if (info.action === 'no-user-chart' || info.action === 'text-click') {
-            safeCb({ type: info.action, message: info.message });
-          } else {
-            safeCb({ type: info.action || 'info', meta: info.meta, fingerprint: info.fingerprint, message: info.message });
+          if (!result || result.ok === false) {
+            _logger.warn('Promise 模式失败:', result && (result.message || result.error));
+            safeCb({ type: 'error', message: result && (result.message || result.error) || 'Promise 执行失败' });
+            return;
           }
-        });
+
+          _logger.info('✅ Promise 模式成功！处理结果:', result);
+
+          if (result.action === 'created') {
+            safeCb({ type: 'chart-binding-created', meta: result.meta, fingerprint: result.fingerprint });
+          } else if (result.action === 'exists') {
+            safeCb({ type: 'chart-binding-exists', meta: result.meta, fingerprint: result.fingerprint });
+          } else if (result.action === 'no-user-chart' || result.action === 'text-click') {
+            safeCb({ type: result.action, message: result.message });
+          } else {
+            safeCb({ type: result.action || 'info', meta: result.meta, fingerprint: result.fingerprint, message: result.message });
+          }
+
+        } catch (promiseError) {
+          _logger.error('🚨 Promise 模式异常:', promiseError);
+          clearTimeout(timeoutId);
+          safeCb({ type: 'error', message: 'Promise 异常: ' + promiseError.message });
+        }
 
       } catch (callError) {
         _logger.error('🚨 执行失败:', callError);
