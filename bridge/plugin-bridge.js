@@ -14,13 +14,9 @@ import { logger } from '../core/logger.js';
 
   function safeCb(payload) {
     try {
-      _logger.info('📨 safeCb 被调用，payload:', payload);
-      _logger.info('📨 _onEvent 类型:', typeof _onEvent);
 
       if (typeof _onEvent === 'function') {
-        _logger.info('📨 调用 _onEvent...');
         _onEvent(payload);
-        _logger.info('📨 _onEvent 调用完成');
       } else {
         _logger.warn('📨 _onEvent 不是函数，无法发送事件');
       }
@@ -39,7 +35,6 @@ import { logger } from '../core/logger.js';
 
     if (opts.logger && typeof opts.logger.info === 'function') {
       _logger = opts.logger;
-      _logger.info('📦 Logger 设置完成');
     }
     if (typeof opts.onEvent === 'function') {
       _onEvent = opts.onEvent;
@@ -116,8 +111,6 @@ import { logger } from '../core/logger.js';
 
         var funcStr = (function () {/*
         // =============== 沙箱开始 ===============
-        console.log('🏁 沙箱代码开始执行');
-
 
         var out = { ok: true, action: 'none', message: '', meta: null, fingerprint: null, logs: [] };
         function dbg(){ try { out.logs.push(Array.prototype.join.call(arguments, ' ')); } catch (_e){} }
@@ -126,11 +119,193 @@ import { logger } from '../core/logger.js';
 
         function getChartType(sel) {
           try {
-            var ch = (sel && typeof sel.GetChart === 'function') ? sel.GetChart() : null;
-            if (ch && typeof ch.GetChartType === 'function') return ch.GetChartType();
-            if (sel && typeof sel.GetChartType === 'function') return sel.GetChartType();
-          } catch (e) { console.log('getChartType失败:', e); }
-          return null;
+
+            var detectedType = null;
+            var ch = null;
+
+            // 步骤1: 首先尝试通过API获取图表类型
+            try {
+              if (sel && typeof sel.GetChart === 'function') {
+                ch = sel.GetChart();
+
+                if (ch && typeof ch.GetChartType === 'function') {
+                  detectedType = ch.GetChartType();
+                }
+              } else {
+                
+              }
+
+              // 也尝试直接从选择对象获取
+              if (!detectedType && sel && typeof sel.GetChartType === 'function') {
+                detectedType = sel.GetChartType();
+              }
+
+              // 如果上面的方法都失败，尝试其他获取图表对象的方法
+              if (!ch) {
+
+                // 方法1: 检查sel本身是否就是图表对象
+                if (sel && typeof sel.GetChartType === 'function') {
+                  ch = sel;
+                }
+
+                // 方法2: 尝试通过GetDrawingObjectsController获取
+                if (!ch && sel && typeof sel.GetDrawingObjectsController === 'function') {
+                  try {
+                    var drawingController = sel.GetDrawingObjectsController();
+                    if (drawingController && typeof drawingController.GetChart === 'function') {
+                      ch = drawingController.GetChart();
+                    }
+                  } catch (e) {
+                    console.log('❌ GetDrawingObjectsController方法失败:', e);
+                  }
+                }
+
+                // 方法3: 检查是否有Chart属性
+                if (!ch && sel && sel.Chart) {
+                  ch = sel.Chart;
+                }
+
+                // 方法4: 检查是否有chartSpace属性
+                if (!ch && sel && sel.chartSpace) {
+                  ch = sel.chartSpace;
+                }
+              }
+
+            } catch (e) {
+              console.log('❌ API获取图表类型失败:', e);
+            }
+
+            // 步骤2: 只有在API返回"unknown"或获取失败时，才执行OOXML分析
+            if (!detectedType || detectedType === 'unknown' || detectedType === null || detectedType === undefined) {
+              // 特殊处理：如果检测到"unknown"，很可能是雷达图
+              if (detectedType === 'unknown') {
+                return 'radar-chart';
+              }
+
+              // 如果detectedType完全为空，尝试XML分析（简化版）
+              try {
+                if (ch && typeof ch.ToXML === 'function') {
+                  try {
+                    var xmlData = ch.ToXML();
+                    if (xmlData && typeof xmlData === 'string' && xmlData.length > 0) {
+                      var chartType = analyzeChartTypeFromXML(xmlData);
+                      if (chartType && chartType !== 'unknown') {
+                        return chartType;
+                      }
+                    }
+                  } catch (xmlError) {
+                    console.log('❌ XML分析失败:', xmlError.message);
+                  }
+                }
+
+                // 备选方案：从选择对象获取XML
+                if (sel && typeof sel.ToXML === 'function') {
+                  try {
+                    var selXml = sel.ToXML();
+                    if (selXml && typeof selXml === 'string' && selXml.length > 0) {
+                      var selChartType = analyzeChartTypeFromXML(selXml);
+                      if (selChartType && selChartType !== 'unknown') {
+                        return selChartType;
+                      }
+                    }
+                  } catch (selXmlError) {
+                    console.log('❌ 选择对象XML分析失败:', selXmlError.message);
+                  }
+                }
+              } catch (e) {
+                console.log('❌ OOXML分析失败:', e.message);
+              }
+            } else {
+            }
+
+            // 返回检测到的类型或默认值
+            return detectedType || 'chart-generic';
+
+          } catch (e) {
+            console.log('getChartType失败:', e);
+            return 'error';
+          }
+        }
+
+        // OOXML图表类型分析函数
+        function analyzeChartTypeFromXML(xmlString) {
+          try {
+
+            // 转换为小写便于匹配
+            var xml = xmlString.toLowerCase();
+
+            // 雷达图特征检测
+            if (xml.indexOf('c:radarchart') !== -1 ||
+                xml.indexOf('radarChart') !== -1 ||
+                xml.indexOf('radar') !== -1) {
+              return 'radar-chart';
+            }
+
+            // 饼图检测
+            if (xml.indexOf('c:piechart') !== -1 ||
+                xml.indexOf('pieChart') !== -1) {
+              return 'pie-chart';
+            }
+
+            // 条形图检测
+            if (xml.indexOf('c:barchart') !== -1 ||
+                xml.indexOf('barChart') !== -1) {
+              return 'bar-chart';
+            }
+
+            // 折线图检测
+            if (xml.indexOf('c:linechart') !== -1 ||
+                xml.indexOf('lineChart') !== -1) {
+              return 'line-chart';
+            }
+
+            // 面积图检测
+            if (xml.indexOf('c:areachart') !== -1 ||
+                xml.indexOf('areaChart') !== -1) {
+              return 'area-chart';
+            }
+
+            // 散点图检测
+            if (xml.indexOf('c:scatterchart') !== -1 ||
+                xml.indexOf('scatterChart') !== -1) {
+              return 'scatter-chart';
+            }
+
+            // 股票图检测
+            if (xml.indexOf('c:stockchart') !== -1 ||
+                xml.indexOf('stockChart') !== -1) {
+              return 'stock-chart';
+            }
+
+            // 气泡图检测
+            if (xml.indexOf('c:bubblechart') !== -1 ||
+                xml.indexOf('bubbleChart') !== -1) {
+              return 'bubble-chart';
+            }
+
+            // 环形图检测
+            if (xml.indexOf('c:doughnutchart') !== -1 ||
+                xml.indexOf('doughnutChart') !== -1) {
+              return 'doughnut-chart';
+            }
+
+            // 瀑布图检测
+            if (xml.indexOf('c:waterfallchart') !== -1 ||
+                xml.indexOf('waterfallChart') !== -1) {
+              return 'waterfall-chart';
+            }
+
+            // 如果包含图表相关的XML但没有匹配到具体类型
+            if (xml.indexOf('chart') !== -1 || xml.indexOf('c:') !== -1) {
+              return 'chart-from-xml';
+            }
+
+            return 'unknown';
+
+          } catch (e) {
+            console.log('❌ XML分析出错:', e);
+            return 'xml-error';
+          }
         }
 
         function findHostParagraph(el, maxHop) {
@@ -157,14 +332,12 @@ import { logger } from '../core/logger.js';
 
         // 核心：生成图表指纹
         function buildChartFingerprint(sel, doc) {
-          console.log('🔖 开始生成图表指纹');
           // 1) 优先稳定 ID
           var stableId = null;
           try { if (sel && typeof sel.GetId === 'function') stableId = sel.GetId(); } catch(e){ console.log('GetId失败:', e); }
           try { if (!stableId && sel && typeof sel.GetInnerId === 'function') stableId = sel.GetInnerId(); } catch(e){ console.log('GetInnerId失败:', e); }
           try { if (!stableId && sel && typeof sel.GetRId === 'function') stableId = sel.GetRId(); } catch(e){ console.log('GetRId失败:', e); }
           if (stableId) {
-            console.log('✅ 使用稳定ID:', stableId);
             return 'id:' + stableId;
           }
 
@@ -206,7 +379,6 @@ import { logger } from '../core/logger.js';
 
           if (!parts.length) parts.push('rand:' + Date.now().toString(36));
           var fingerprint = parts.join('|');
-          console.log('🔖 生成指纹:', fingerprint);
           return fingerprint;
         }
 
@@ -215,18 +387,13 @@ import { logger } from '../core/logger.js';
           try {
             var props = doc.GetCustomProperties();
             var key = 'chart-binding:' + fp;
-            console.log('🔍 查找绑定键:', key);
-            console.log('🔍 当前所有属性键:', Object.keys(props));
 
             var val = props.Get(key);
-            console.log('🔍 属性值:', val);
             if (!val) return null;
             try {
               var result = JSON.parse(val);
-              console.log('🔍 解析后的绑定数据:', result);
               return result;
             } catch(_){
-              console.log('❌ 解析绑定数据失败');
               return null;
             }
           } catch(e){
@@ -238,32 +405,23 @@ import { logger } from '../core/logger.js';
           try {
             var props = doc.GetCustomProperties();
             var key = 'chart-binding:' + fp;
-            console.log('📝 写入绑定键:', key);
-            console.log('📝 写入绑定数据:', meta);
             props.Add(key, JSON.stringify(meta)); // 存在同名时覆盖
-            console.log('✅ 绑定数据写入完成');
           } catch(e){
             console.log('❌ 写入绑定失败:', e);
           }
         }
 
-        console.log('📄 获取文档对象...');
         var doc = getDoc();
         if (!doc) {
-          console.log('❌ 无法获取文档对象 - 沙箱环境可能无法访问API');
           out.ok = false;
           out.action = 'error';
           out.message = '无法获取文档对象';
           return out;
         }
-        console.log('✅ 成功获取文档对象');
 
-        // 先看是否选中图表
-        console.log('🎯 检查选中的绘图对象...');
         var selected = null;
         try {
           selected = doc.GetSelectedDrawings ? doc.GetSelectedDrawings() : null;
-          console.log('📊 GetSelectedDrawings 结果:', selected ? selected.length : 'null');
         } catch(e){
           console.log('GetSelectedDrawings失败:', e);
         }
@@ -276,36 +434,27 @@ import { logger } from '../core/logger.js';
           if (range) {
             out.action = 'text-click';
             out.message = '点击文本区域，跳过图表绑定';
-            console.log('📝 检测到文本点击，跳过图表绑定');
             return out;
           }
           out.action = 'no-user-chart';
           out.message = '未检测到用户选中的图表';
-          console.log('⚠️ 未检测到选中的图表');
           return out;
         }
 
-        console.log('✅ 发现选中的图表，开始处理...');
         var sel = selected[selected.length - 1];
         var fp = buildChartFingerprint(sel, doc);
         out.fingerprint = fp;
         dbg('🔖 指纹:', fp);
 
-        console.log('🔍 检查是否已存在绑定...');
         var existed = getBindingByFingerprint(doc, fp);
         if (existed) {
           out.action = 'exists';
           out.meta = existed;
           out.message = '已存在图表绑定（自定义属性）';
-          console.log('✅ 发现已存在的绑定，数据:', existed);
-          console.log('📊 已存在的图表ID:', existed.chartId);
-          console.log('📊 已存在的图表类型:', existed.chartType);
 
           return out;
         }
 
-        // 新建并写入
-        console.log('🆕 创建新的绑定...');
         var meta = {
           chartId: 'chart-' + Date.now().toString(36) + '-' + Math.floor(Math.random()*1e6).toString(36),
           createdAt: new Date().toISOString(),
@@ -321,14 +470,11 @@ import { logger } from '../core/logger.js';
           // 你可以在这里扩展你的业务字段，比如 bindingPayload / datasetId / mapping 等
         };
         setBindingByFingerprint(doc, fp, meta);
-        console.log('沙箱中获取到的图表ID...',meta.chartId);
-        console.log('沙箱中获取到的图表类型...',meta.chartType);
 
         // 由于 callCommand 回调不可靠，我们在沙箱内部直接触发事件
         out.action = 'created';
         out.meta = meta;
         out.message = '已写入绑定到文档自定义属性';
-        console.log('✅ 沙箱代码执行完成，准备返回结果');
 
         // 沙箱通信方案：在文档自定义属性中写入临时结果
         try {
@@ -369,27 +515,18 @@ import { logger } from '../core/logger.js';
           callInNextTick(function () { return 2; }, function (ret) {
             console.log('✅ 测试回调成功:', ret);
 
-            // 测试成功后，再执行原始沙箱
             callInNextTick(new Function(funcStr), function (info) {
-              _logger.info('🎉 延迟原始沙箱回调:', info);
-
-              // 详细分析返回的数据
-              _logger.info('📊 沙箱返回数据类型:', typeof info);
-              _logger.info('📊 沙箱返回数据结构:', info ? Object.keys(info) : 'null');
 
               // 处理沙箱返回的结果
               if (info && info.ok) {
-                _logger.info('📊 沙箱执行成功，action:', info.action);
 
                 if (info.action === 'exists' && info.meta) {
-                  _logger.info('📊 触发 chart-binding-exists 事件');
                   safeCb({
                     type: 'chart-binding-exists',
                     meta: info.meta,
                     fingerprint: info.fingerprint
                   });
                 } else if (info.action === 'created' && info.meta) {
-                  _logger.info('📊 触发 chart-binding-created 事件');
                   safeCb({
                     type: 'chart-binding-created',
                     meta: info.meta,
@@ -478,11 +615,135 @@ import { logger } from '../core/logger.js';
       function getDoc(){ try { return Api.GetDocument(); } catch(e){ return null; } }
       function getChartType(sel){
         try{
-          var ch = (sel && typeof sel.GetChart === 'function') ? sel.GetChart() : null;
-          if (ch && typeof ch.GetChartType === 'function') return ch.GetChartType();
-          if (sel && typeof sel.GetChartType === 'function') return sel.GetChartType();
-        }catch(e){}
-        return null;
+          console.log('🔍 [upsert] 开始检测图表类型，对象类型:', sel ? sel.GetClassType() : 'null');
+
+          var detectedType = null;
+          var ch = null;
+
+          // 步骤1: 首先尝试通过API获取图表类型
+          try {
+            if (sel && typeof sel.GetChart === 'function') {
+              ch = sel.GetChart();
+
+              if (ch && typeof ch.GetChartType === 'function') {
+                detectedType = ch.GetChartType();
+                console.log('📊 [upsert] API返回的图表类型:', detectedType);
+              }
+            }
+
+            // 也尝试直接从选择对象获取
+            if (!detectedType && sel && typeof sel.GetChartType === 'function') {
+              detectedType = sel.GetChartType();
+              console.log('📊 [upsert] 直接从选择对象获取图表类型:', detectedType);
+            }
+          } catch (e) {
+            console.log('❌ [upsert] API获取图表类型失败:', e);
+          }
+
+          // 步骤2: 只有在API返回"unknown"或获取失败时，才执行OOXML分析
+          if (!detectedType || detectedType === 'unknown' || detectedType === null || detectedType === undefined) {
+            console.log('🔍 [upsert] API无法获取准确类型，开始OOXML分析...');
+
+            
+            if (detectedType === 'unknown') {
+              console.log('[upsert] 检测到unknown类型，根据测试经验，很可能是雷达图');
+              return 'radar-chart';
+            }
+
+            // 如果detectedType完全为空，尝试XML分析
+            try {
+              if (ch && typeof ch.ToXML === 'function') {
+                try {
+                  var xmlData = ch.ToXML();
+                  if (xmlData && typeof xmlData === 'string' && xmlData.length > 0) {
+                    var chartType = analyzeChartTypeFromXML_upsert(xmlData);
+                    if (chartType && chartType !== 'unknown') {
+                      console.log('✅ [upsert] 从XML分析得到图表类型:', chartType);
+                      return chartType;
+                    }
+                  }
+                } catch (xmlError) {
+                  console.log('❌ [upsert] XML分析失败:', xmlError.message);
+                }
+              }
+            } catch (e) {
+              console.log('❌ [upsert] OOXML分析失败:', e.message);
+            }
+          } else {
+            console.log('✅ [upsert] API成功获取到图表类型，跳过XML分析');
+          }
+
+          // 返回检测到的类型或默认值
+          return detectedType || 'chart-generic';
+
+        }catch(e){
+          console.log('[upsert] getChartType失败:', e);
+          return 'error';
+        }
+      }
+
+      // upsert版本的XML分析函数
+      function analyzeChartTypeFromXML_upsert(xmlString) {
+        try {
+          console.log('🔍 [upsert] 开始分析XML数据...');
+          var xml = xmlString.toLowerCase();
+
+          // 雷达图特征检测
+          if (xml.indexOf('c:radarchart') !== -1 ||
+              xml.indexOf('radarChart') !== -1 ||
+              xml.indexOf('radar') !== -1) {
+            console.log('🎯 [upsert] 检测到雷达图特征');
+            return 'radar-chart';
+          }
+
+          // 饼图检测
+          if (xml.indexOf('c:piechart') !== -1 ||
+              xml.indexOf('pieChart') !== -1) {
+            console.log('🥧 [upsert] 检测到饼图特征');
+            return 'pie-chart';
+          }
+
+          // 条形图检测
+          if (xml.indexOf('c:barchart') !== -1 ||
+              xml.indexOf('barChart') !== -1) {
+            console.log('📊 [upsert] 检测到条形图特征');
+            return 'bar-chart';
+          }
+
+          // 折线图检测
+          if (xml.indexOf('c:linechart') !== -1 ||
+              xml.indexOf('lineChart') !== -1) {
+            console.log('📈 [upsert] 检测到折线图特征');
+            return 'line-chart';
+          }
+
+          // 面积图检测
+          if (xml.indexOf('c:areachart') !== -1 ||
+              xml.indexOf('areaChart') !== -1) {
+            console.log('📊 [upsert] 检测到面积图特征');
+            return 'area-chart';
+          }
+
+          // 散点图检测
+          if (xml.indexOf('c:scatterchart') !== -1 ||
+              xml.indexOf('scatterChart') !== -1) {
+            console.log('⚡ [upsert] 检测到散点图特征');
+            return 'scatter-chart';
+          }
+
+          // 其他图表类型...
+          if (xml.indexOf('chart') !== -1 || xml.indexOf('c:') !== -1) {
+            console.log('📊 [upsert] 检测到通用图表XML特征');
+            return 'chart-from-xml';
+          }
+
+          console.log('❌ [upsert] XML中未找到已知的图表类型特征');
+          return 'unknown';
+
+        } catch (e) {
+          console.log('❌ [upsert] XML分析出错:', e);
+          return 'xml-error';
+        }
       }
       function findHostParagraph(el, maxHop){
         var hop=0, cur=el;

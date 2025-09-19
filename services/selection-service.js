@@ -8,8 +8,6 @@ export class SelectionService {
     bindSelectionChange(handler) {
       console.log('🔗 bindSelectionChange 被调用，handler 类型:', typeof handler);
       this.plugin.onSelectionChanged(async (contentControlData) => {
-        console.log('📡 onSelectionChanged 回调被触发');
-        console.log('📦 收到的数据:', contentControlData);
 
         try {
           var result;
@@ -51,9 +49,6 @@ export class SelectionService {
               result = null;
             }
           }
-
-          console.log('🔍 最终检测结果:', result);
-          console.log('📞 即将调用 handler，handler 类型:', typeof handler);
 
           if (handler) {
             handler(result);

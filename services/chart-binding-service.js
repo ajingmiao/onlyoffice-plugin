@@ -15,358 +15,275 @@ export class ChartBindingService {
 
     /**
      * 为文档中的图表绑定隐藏数据
-     * @param {Object} chartData - 图表数据
+     * @param {Object} chartData - 包含chartId和数据的对象 {chartId: "xxx", data: {...}, metadata: {...}}
      */
     async bindDataToChart(chartData) {
         console.log('开始图表数据绑定流程');
         console.log('从宿主页面接收到的图表数据:', chartData);
 
-        // 检查是否从宿主页面传递了有效数据（在runInDoc外部检查）
-        if (!chartData || !chartData.data || !chartData.metadata) {
-            console.log('❌ 未收到有效的图表数据，无法进行绑定');
+        // 检查是否从宿主页面传递了有效数据
+        if (!chartData || !chartData.chartId) {
+            console.log('❌ 未收到有效的图表ID，无法进行绑定');
             return {
                 success: false,
-                error: '未从宿主页面接收到有效的图表数据，请确保调用时传递了完整的图表数据结构',
+                error: '未从宿主页面接收到有效的chartId，请确保调用时传递了chartId',
                 data: {
                     timestamp: new Date().toLocaleString()
                 }
             };
         }
 
-        console.log('✅ 使用宿主页面传递的图表数据');
+        if (!chartData.data || !chartData.metadata) {
+            console.log('❌ 未收到有效的图表数据，无法进行绑定');
+            return {
+                success: false,
+                error: '未从宿主页面接收到有效的图表数据，请确保调用时传递了完整的数据结构',
+                data: {
+                    timestamp: new Date().toLocaleString()
+                }
+            };
+        }
+
+        const targetChartId = chartData.chartId;
+        console.log('🎯 目标图表ID:', targetChartId);
 
         // 由于runInDoc是隔离环境，将数据直接嵌入到函数体中
         const chartDataJson = JSON.stringify(chartData);
         console.log('🔍 准备嵌入的数据JSON长度:', chartDataJson.length);
 
-        // 创建包含数据的函数字符串，然后用new Function执行
-        const funcStr = `
-            const doc = Api.GetDocument();
+        // 创建包含数据的函数字符串，使用与plugin-bridge.js一致的方式
+        const funcStr = (function(){/*
+            var out = { ok: true, bindings: [], logs: [] };
+            function dbg(){ try { out.logs.push(Array.prototype.join.call(arguments, ' ')); } catch (_e){} }
+
+            var doc = Api.GetDocument();
             console.log('=== 图表数据绑定开始 ===');
 
             try {
-                // 直接使用嵌入的数据
-                const bindingData = ${chartDataJson};
-                console.log('📊 使用嵌入的绑定数据:', bindingData);
+                // 使用与plugin-bridge.js一致的方式获取数据
+                var bindingData = null;
+                try {
+                    bindingData = Asc && Asc.scope && Asc.scope._cb_chartData ? Asc.scope._cb_chartData : null;
+                    if (bindingData) {
+                        console.log('📊 从scope获取绑定数据:', bindingData);
+                    } else {
+                        console.log('❌ 无法从scope获取绑定数据');
+                        return { success: false, error: '无法获取绑定数据' };
+                    }
+                } catch (scopeError) {
+                    console.log('❌ 获取scope数据失败:', scopeError.message);
+                    return { success: false, error: '获取scope数据失败: ' + scopeError.message };
+                }
 
-                if (!bindingData || !bindingData.data || !bindingData.metadata) {
-                    console.log('❌ 嵌入的数据无效');
+                var targetChartId = bindingData.chartId;
+                console.log('🎯 查找图表ID:', targetChartId);
+
+                // 通过chartId从文档自定义属性中查找图表
+                var props = doc.GetCustomProperties();
+                var foundChart = null;
+                var foundFingerprint = null;
+
+                // 遍历所有图表绑定属性，查找匹配的chartId
+                console.log('🔍 开始在文档自定义属性中查找图表...');
+
+                // 1. 先扫描当前选中的图表
+                var selectedDrawings = doc.GetSelectedDrawings();
+                if (selectedDrawings && selectedDrawings.length > 0) {
+                    console.log('📋 检查当前选中的图表...');
+                    for (var i = 0; i < selectedDrawings.length; i++) {
+                        var drawing = selectedDrawings[i];
+
+                        // 生成指纹来查找绑定
+                        var fingerprint = generateChartFingerprint(drawing, doc);
+                        var bindingKey = 'chart-binding:' + fingerprint;
+
+                        try {
+                            var bindingValue = props.Get(bindingKey);
+                            if (bindingValue) {
+                                var binding = JSON.parse(bindingValue);
+                                console.log('📊 检查绑定:', binding);
+
+                                if (binding.chartId === targetChartId) {
+                                    console.log('✅ 找到匹配的图表!');
+                                    foundChart = drawing;
+                                    foundFingerprint = fingerprint;
+                                    break;
+                                }
+                            }
+                        } catch (e) {
+                            console.log('解析绑定数据失败:', e);
+                        }
+                    }
+                }
+
+                // 2. 如果当前选中的图表中没找到，扫描所有图表
+                if (!foundChart) {
+                    console.log('📋 在所有文档图表中查找...');
+                    var allDrawings = doc.GetAllDrawingObjects();
+
+                    if (allDrawings && allDrawings.length > 0) {
+                        for (var j = 0; j < allDrawings.length; j++) {
+                            var drawing = allDrawings[j];
+
+                            // 生成指纹来查找绑定
+                            var fingerprint = generateChartFingerprint(drawing, doc);
+                            var bindingKey = 'chart-binding:' + fingerprint;
+
+                            try {
+                                var bindingValue = props.Get(bindingKey);
+                                if (bindingValue) {
+                                    var binding = JSON.parse(bindingValue);
+                                    console.log('📊 检查绑定:', binding);
+
+                                    if (binding.chartId === targetChartId) {
+                                        console.log('✅ 找到匹配的图表!');
+                                        foundChart = drawing;
+                                        foundFingerprint = fingerprint;
+                                        break;
+                                    }
+                                }
+                            } catch (e) {
+                                console.log('解析绑定数据失败:', e);
+                            }
+                        }
+                    }
+                }
+
+                if (!foundChart) {
+                    console.log('❌ 未找到匹配的图表');
                     return {
                         success: false,
-                        error: '嵌入的图表数据无效',
-                        data: {
-                            timestamp: new Date().toLocaleString()
-                        }
+                        error: '未找到chartId为 ' + targetChartId + ' 的图表',
+                        chartId: targetChartId
                     };
                 }
 
-                console.log('📊 最终使用的绑定数据:', bindingData);
+                console.log('🎯 成功找到目标图表，开始绑定数据...');
 
-                // 直接在内部实现图表扫描逻辑
-                console.log('开始扫描文档中的图表...');
-                const documentLevelCharts = [];
+                // 更新图表绑定数据
+                var bindingKey = 'chart-binding:' + foundFingerprint;
+                var existingBindingValue = props.Get(bindingKey);
+                var updatedBinding;
 
-                try {
-                    if (typeof doc.GetAllDrawingObjects === 'function') {
-                        const docDrawingObjects = doc.GetAllDrawingObjects();
-                        console.log('📄 文档级绘图对象:', docDrawingObjects);
-
-                        if (docDrawingObjects && docDrawingObjects.length > 0) {
-                            console.log('🎯 找到 ' + docDrawingObjects.length + ' 个文档级绘图对象！');
-
-                            for (let j = 0; j < docDrawingObjects.length; j++) {
-                                const drawingObj = docDrawingObjects[j];
-                                console.log('📊 绘图对象 ' + j + ':', drawingObj);
-
-                                let drawingType = 'unknown';
-                                if (typeof drawingObj.GetClassType === 'function') {
-                                    drawingType = drawingObj.GetClassType();
-                                }
-                                console.log('📊 绘图对象类型:', drawingType);
-
-                                // 检查是否是图表类型
-                                if (drawingType === 'chart' ||
-                                    drawingType.includes('Chart') ||
-                                    drawingType.includes('Drawing') ||
-                                    drawingType.includes('Shape') ||
-                                    drawingType.includes('Image')) {
-
-                                    console.log('✅ 发现文档级图表/图形:', drawingType);
-
-                                    const chartInfo = {
-                                        element: drawingObj,
-                                        elementType: drawingType,
-                                        index: 'doc_drawing_' + j,
-                                        drawingIndex: j,
-                                        isDocumentLevel: true,
-                                        source: 'document-level'
-                                    };
-
-                                    documentLevelCharts.push(chartInfo);
-                                }
-                            }
-                        }
-                    } else {
-                        console.log('文档不支持GetAllDrawingObjects方法');
-                    }
-                } catch (docError) {
-                    console.log('检查文档级绘图对象失败:', docError);
+                if (existingBindingValue) {
+                    updatedBinding = JSON.parse(existingBindingValue);
+                } else {
+                    updatedBinding = {
+                        chartId: targetChartId,
+                        createdAt: new Date().toISOString(),
+                        fingerprint: foundFingerprint
+                    };
                 }
 
-                console.log('扫描结果 - 文档级图表数:', documentLevelCharts.length);
+                // 合并新的数据
+                updatedBinding.boundData = bindingData.data;
+                updatedBinding.metadata = bindingData.metadata;
+                updatedBinding.lastUpdated = new Date().toISOString();
 
-                const boundCharts = [];
-                const bindingResults = [];
+                // 保存更新后的绑定
+                props.Add(bindingKey, JSON.stringify(updatedBinding));
 
-                // 处理找到的图表
-                documentLevelCharts.forEach(function(chartInfo) {
-                    console.log('处理图表:', chartInfo.index, chartInfo.elementType);
-
-                    // 简化的图表类型识别（直接内联实现）
-                    let detailedChartType = {
-                        category: 'chart',
-                        specificType: 'unknown',
-                        description: '图表',
-                        confidence: 0.8
-                    };
-
-                    // 尝试获取准确的图表类型
-                    try {
-                        // 方法1: 尝试GetPrevChart
-                        if (typeof chartInfo.element.GetPrevChart === 'function') {
-                            console.log('🔍 优先尝试GetPrevChart方法');
-
-                            let prevChart;
-                            try {
-                                prevChart = chartInfo.element.GetPrevChart();
-                                console.log('📊 GetPrevChart返回:', prevChart);
-                            } catch (sdkError) {
-                                console.log('🚨 GetPrevChart触发SDK错误:', sdkError.message);
-                                prevChart = null;
-                            }
-
-                            if (prevChart && typeof prevChart.GetChartType === 'function') {
-                                try {
-                                    const chartType = prevChart.GetChartType();
-                                    console.log('📊 GetChartType返回:', chartType);
-                                    if (chartType) {
-                                        console.log('✅ 通过GetPrevChart获得准确图表类型:', chartType);
-                                        detailedChartType.specificType = chartType;
-                                        detailedChartType.description = '图表 (' + chartType + ')';
-                                        detailedChartType.confidence = 1.0;
-                                    } else {
-                                        console.log('⚠️ GetChartType返回空值');
-                                    }
-                                } catch (chartTypeError) {
-                                    console.log('🚨 GetChartType调用失败:', chartTypeError.message);
-                                }
-                            } else {
-                                console.log('⚠️ prevChart为空，尝试其他方法');
-                            }
-                        }
-
-                        // 方法2: 如果GetPrevChart失败，尝试直接调用GetChart
-                        if (detailedChartType.specificType === 'unknown' && typeof chartInfo.element.GetChart === 'function') {
-                            console.log('🔍 尝试GetChart方法');
-                            try {
-                                const chart = chartInfo.element.GetChart();
-                                console.log('📊 GetChart返回:', chart);
-                                if (chart && typeof chart.GetChartType === 'function') {
-                                    const chartType = chart.GetChartType();
-                                    console.log('📊 Chart.GetChartType返回:', chartType);
-                                    if (chartType) {
-                                        console.log('✅ 通过GetChart获得准确图表类型:', chartType);
-                                        detailedChartType.specificType = chartType;
-                                        detailedChartType.description = '图表 (' + chartType + ')';
-                                        detailedChartType.confidence = 1.0;
-                                    }
-                                }
-                            } catch (chartError) {
-                                console.log('🚨 GetChart调用失败:', chartError.message);
-                            }
-                        }
-
-                        // 方法2.5: 尝试直接调用图表元素的GetChartType方法
-                        if (detailedChartType.specificType === 'unknown' && typeof chartInfo.element.GetChartType === 'function') {
-                            console.log('🔍 尝试直接调用图表元素的GetChartType方法');
-                            try {
-                                const chartType = chartInfo.element.GetChartType();
-                                console.log('📊 直接GetChartType返回:', chartType);
-                                if (chartType && chartType !== 'chart') {
-                                    console.log('✅ 通过直接GetChartType获得准确图表类型:', chartType);
-                                    detailedChartType.specificType = chartType;
-                                    detailedChartType.description = '图表 (' + chartType + ')';
-                                    detailedChartType.confidence = 1.0;
-                                }
-                            } catch (chartTypeError) {
-                                console.log('🚨 直接GetChartType调用失败:', chartTypeError.message);
-                            }
-                        }
-
-                    } catch (chartTypeError) {
-                        console.log('🚨 图表类型识别失败:', chartTypeError.message);
-                    }
-
-                    console.log('📊 图表类型识别结果:', detailedChartType);
-
-                    // 生成唯一标识符
-                    const uniqueId = 'chart_' + chartInfo.drawingIndex + '_' + Date.now();
-
-                    // 创建绑定信息
-                    const bindingInfo = {
-                        chartIndex: chartInfo.index,
-                        chartType: chartInfo.elementType,
-                        detailedChartType: detailedChartType,
-                        uniqueId: uniqueId,
-                        boundData: bindingData.data || {},
-                        bindingId: 'doc_chart_' + chartInfo.drawingIndex + '_' + Date.now(),
-                        boundAt: new Date().toISOString(),
-                        metadata: bindingData.metadata || {},
-                        isDocumentLevel: true,
-                        drawingIndex: chartInfo.drawingIndex
-                    };
-
-                    // 简化的数据绑定（使用内存存储）
-                    let bindingResult = {
-                        directBinding: false,
-                        bindingMethod: 'memory-storage',
-                        storageKey: null
-                    };
-
-                    try {
-                        // 尝试直接绑定
-                        if (typeof chartInfo.element.SetCustomProperty === 'function') {
-                            chartInfo.element.SetCustomProperty('chartData', JSON.stringify(bindingInfo));
-                            bindingResult.directBinding = true;
-                            bindingResult.bindingMethod = 'custom-property';
-                            console.log('✅ 直接在图表元素上绑定数据成功');
-                        } else {
-                            // 使用内存存储
-                            if (!window.chartDataStorage) {
-                                window.chartDataStorage = {};
-                            }
-                            const storageKey = 'doc_chart_' + chartInfo.drawingIndex + '_' + Date.now();
-                            window.chartDataStorage[storageKey] = bindingInfo;
-                            bindingResult.storageKey = storageKey;
-                            console.log('✅ 使用内存存储绑定图表数据，存储键:', storageKey);
-                        }
-                    } catch (bindingError) {
-                        console.log('数据绑定失败:', bindingError.message);
-                    }
-
-                    // 合并绑定结果
-                    Object.assign(bindingInfo, bindingResult);
-
-                    boundCharts.push(chartInfo);
-                    bindingResults.push(bindingInfo);
-
-                    console.log('🎯 图表绑定完成:', {
-                        uniqueId: uniqueId,
-                        chartType: detailedChartType.description,
-                        specificType: detailedChartType.specificType,
-                        bindingMethod: bindingResult.bindingMethod
-                    });
-
-                    // 验证绑定：立即获取刚绑定的数据并打印
-                    console.log('🔍 验证数据绑定 - 开始获取绑定数据...');
-                    try {
-                        let retrievedData = null;
-                        let retrievalMethod = null;
-
-                        // 方法1：从自定义属性获取
-                        if (bindingResult.bindingMethod === 'custom-property') {
-                            if (typeof chartInfo.element.GetCustomProperty === 'function') {
-                                const customData = chartInfo.element.GetCustomProperty('chartData');
-                                if (customData) {
-                                    retrievedData = JSON.parse(customData);
-                                    retrievalMethod = 'custom-property';
-                                    console.log('✅ 从自定义属性成功获取绑定数据');
-                                }
-                            }
-                        }
-
-                        // 方法2：从内存存储获取
-                        if (!retrievedData && bindingResult.bindingMethod === 'memory-storage' && bindingResult.storageKey) {
-                            if (window.chartDataStorage && window.chartDataStorage[bindingResult.storageKey]) {
-                                retrievedData = window.chartDataStorage[bindingResult.storageKey];
-                                retrievalMethod = 'memory-storage';
-                                console.log('✅ 从内存存储成功获取绑定数据，存储键:', bindingResult.storageKey);
-                            }
-                        }
-
-                        if (retrievedData) {
-                            console.log('📋 验证成功！获取到的绑定数据:');
-                            console.log('   - 获取方法:', retrievalMethod);
-                            console.log('   - 图表标题:', retrievedData.boundData?.title || '未知');
-                            console.log('   - 图表类型:', retrievedData.boundData?.type || '未知');
-                            console.log('   - 数据源:', retrievedData.boundData?.dataSource || '未知');
-                            console.log('   - 绑定ID:', retrievedData.bindingId);
-                            console.log('   - 绑定时间:', retrievedData.boundAt);
-
-                            // 打印关键指标
-                            if (retrievedData.boundData?.metrics) {
-                                console.log('   - 关键指标:');
-                                const metrics = retrievedData.boundData.metrics;
-                                if (metrics.totalSales) console.log('     * 总销售额: ¥' + metrics.totalSales.toLocaleString());
-                                if (metrics.growthRate) console.log('     * 增长率: ' + metrics.growthRate + '%');
-                                if (metrics.topProduct) console.log('     * 热门产品: ' + metrics.topProduct);
-                                if (metrics.targetAchievement) console.log('     * 目标达成: ' + metrics.targetAchievement + '%');
-                            }
-
-                            // 打印数据系列预览
-                            if (retrievedData.boundData?.series && retrievedData.boundData.series.length > 0) {
-                                console.log('   - 数据系列:');
-                                retrievedData.boundData.series.forEach(function(series) {
-                                    console.log('     * ' + series.name + ': [' + series.data.slice(0, 3).join(', ') +
-                                              (series.data.length > 3 ? '...' : '') + ']');
-                                });
-                            }
-
-                            console.log('   - 完整数据对象:', retrievedData);
-                        } else {
-                            console.log('⚠️ 数据绑定验证失败：无法获取刚绑定的数据');
-                            console.log('   - 尝试的方法:', bindingResult.bindingMethod);
-                            console.log('   - 存储键:', bindingResult.storageKey || '无');
-                        }
-                    } catch (verifyError) {
-                        console.log('❌ 数据绑定验证出错:', verifyError.message);
-                    }
-                });
-
-                // 如果没有找到图表，提供指导
-                if (boundCharts.length === 0) {
-                    console.log('💡 提示: 当前文档中没有检测到图表元素');
-                }
+                console.log('✅ 图表数据绑定完成');
 
                 return {
                     success: true,
-                    message: boundCharts.length > 0 ?
-                        ('成功绑定 ' + boundCharts.length + ' 个图表') :
-                        ('文档扫描完成，但未发现图表元素。'),
-                    data: {
-                        chartsFound: boundCharts.length,
-                        bindingResults: bindingResults,
-                        boundData: bindingData,
-                        bindingMethod: 'inline-processing',
-                        timestamp: new Date().toLocaleString()
-                    }
+                    message: '图表数据绑定成功',
+                    chartId: targetChartId,
+                    boundData: bindingData.data,
+                    timestamp: new Date().toISOString()
                 };
 
             } catch (error) {
                 console.log('❌ 图表数据绑定失败:', error);
                 return {
                     success: false,
-                    error: error.message,
-                    data: {
-                        timestamp: new Date().toLocaleString()
-                    }
+                    error: '图表数据绑定失败: ' + error.message,
+                    timestamp: new Date().toISOString()
                 };
             }
-        `;
 
-        // 使用new Function执行包含数据的代码
-        const dynamicFunction = new Function(funcStr);
-        return this.editor.runInDoc(dynamicFunction);
+            // 辅助函数：生成图表指纹（简化版）
+            function generateChartFingerprint(sel, doc) {
+                // 简化的指纹生成逻辑
+                var parts = [];
+
+                // 获取图表类型
+                var type = 'unknown';
+                try {
+                    if (sel && typeof sel.GetChartType === 'function') {
+                        type = sel.GetChartType() || 'unknown';
+                    }
+                } catch (e) {
+                    // 忽略错误
+                }
+
+                if (type) parts.push('type:' + type);
+
+                // 获取类名
+                try {
+                    var className = sel ? sel.GetClassType() : null;
+                    if (className) parts.push('chain:' + className);
+                } catch (e) {
+                    // 忽略错误
+                }
+
+                if (!parts.length) parts.push('rand:' + Date.now().toString(36));
+                return parts.join('|');
+            }
+        */}).toString().replace(/^function\s*\(\)\s*\{\/\*|\*\/\}\s*$/g, '');
+
+        console.log('🔍 准备执行图表绑定沙箱代码...');
+
+        // 将数据设置到scope中，使用与plugin-bridge.js一致的方式
+        try {
+            if (!window.Asc) window.Asc = {};
+            if (!window.Asc.scope) window.Asc.scope = {};
+            window.Asc.scope._cb_chartData = chartData;
+            console.log('✅ 数据已设置到 Asc.scope._cb_chartData');
+        } catch (scopeError) {
+            console.error('❌ 设置scope数据失败:', scopeError);
+            return {
+                success: false,
+                error: '设置scope数据失败: ' + scopeError.message,
+                chartId: targetChartId
+            };
+        }
+
+         try {
+            var testFunc = new Function(funcStr);
+            console.log('✅ 沙箱代码语法检查通过');
+          } catch (syntaxError) {
+            console.error('🚨 沙箱代码语法错误:', syntaxError.message);
+            return {
+                success: false,
+                error: '沙箱代码语法错误: ' + syntaxError.message,
+                chartId: targetChartId
+            };
+          }
+          
+        return new Promise((resolve) => {
+            this.editor.runInDoc(new Function(funcStr), (result) => {
+                console.log('📋 图表绑定沙箱执行结果:', result);
+
+                if (result && result.success) {
+                    console.log('✅ 图表数据绑定成功');
+                    resolve({
+                        success: true,
+                        message: result.message,
+                        chartId: result.chartId,
+                        boundData: result.boundData,
+                        timestamp: result.timestamp
+                    });
+                } else {
+                    console.log('❌ 图表数据绑定失败');
+                    resolve({
+                        success: false,
+                        error: result ? result.error : '图表绑定执行失败',
+                        chartId: targetChartId
+                    });
+                }
+            });
+        });
     }
 
     /**
@@ -576,7 +493,7 @@ export class ChartBindingService {
                         data: {
                             clickType: 'chart',
                             chartInfo: targetChart,
-                            chartTypeInfo: chartTypeInfo,  // 新增图表类型信息
+                            chartTypeInfo: chartTypeInfo,
                             boundData: targetChart.boundData.boundData || targetChart.boundData,
                             bindingMetadata: {
                                 bindingId: targetChart.boundData.bindingId,
@@ -618,7 +535,7 @@ export class ChartBindingService {
                         data: {
                             clickType: 'chart',
                             chartInfo: chart,
-                            chartTypeInfo: chartTypeInfo,  // 新增图表类型信息
+                            chartTypeInfo: chartTypeInfo,
                             boundData: null,
                             detectionSummary: {
                                 totalChartsFound: chartDetectionResults.length,
@@ -662,69 +579,6 @@ export class ChartBindingService {
     }
 
     /**
-     * 获取文档中所有图表的绑定数据摘要
-     */
-    async getChartBindingSummary() {
-        // 在runInDoc外部获取服务引用，避免作用域问题
-        const chartDetector = this.chartDetector;
-        const dataBinder = this.dataBinder;
-
-        return new Promise((resolve) => {
-            this.editor.runInDoc(() => {
-                const doc = Api.GetDocument();
-                console.log('=== 获取图表绑定摘要 ===');
-
-                try {
-                    const scanResults = chartDetector.scanDocument(doc);
-                    const summary = {
-                        totalCharts: 0,
-                        chartsWithData: 0,
-                        bindingSummary: []
-                    };
-
-                    // 统计文档级图表
-                    scanResults.documentLevelCharts.forEach((chartInfo, index) => {
-                        summary.totalCharts++;
-                        const dataResult = dataBinder.getBoundData(chartInfo.element, chartInfo.drawingIndex);
-
-                        if (dataResult.hasBindingData) {
-                            summary.chartsWithData++;
-                        }
-
-                        summary.bindingSummary.push({
-                            chartIndex: chartInfo.index,
-                            chartType: chartInfo.elementType,
-                            hasBindingData: dataResult.hasBindingData,
-                            bindingPreview: dataResult.boundData?.bindingId || 'unknown',
-                            source: 'document-level'
-                        });
-                    });
-
-                    resolve({
-                        success: true,
-                        data: summary,
-                        timestamp: new Date().toLocaleString('zh-CN')
-                    });
-
-                } catch (error) {
-                    resolve({
-                        success: false,
-                        error: error.message
-                    });
-                }
-
-            }, { async: false, cb: (res) => resolve(res) });
-        });
-    }
-
-    /**
-     * 清理临时数据
-     */
-    cleanupTempData() {
-        this.dataBinder.cleanupTempData();
-    }
-
-    /**
      * 获取当前选中图表的类型信息
      * @returns {Object} 图表类型信息
      */
@@ -749,7 +603,7 @@ export class ChartBindingService {
                 const chart = selected[selected.length - 1];
                 console.log('✅ 发现选中的图表');
 
-                // 生成图表指纹（复用之前的逻辑）
+                // 生成图表指纹
                 function buildChartFingerprint(sel, doc) {
                     var stableId = null;
                     try { if (sel && typeof sel.GetId === 'function') stableId = sel.GetId(); } catch(e){}
@@ -871,6 +725,15 @@ export class ChartBindingService {
                     timestamp: new Date().toLocaleString('zh-CN')
                 }
             };
+        }
+    }
+
+    /**
+     * 清理临时数据
+     */
+    cleanupTempData() {
+        if (this.dataBinder && typeof this.dataBinder.cleanupTempData === 'function') {
+            this.dataBinder.cleanupTempData();
         }
     }
 }
