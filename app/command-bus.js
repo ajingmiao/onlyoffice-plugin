@@ -267,6 +267,15 @@ export class CommandBus {
         }
       }
 
+      case COMMANDS.GET_CHART_TYPE: {
+        const chartTypeResult = await this.chartBinding.getChartType();
+        if (chartTypeResult && chartTypeResult.success) {
+          return { ok: true, data: chartTypeResult };
+        } else {
+          return { ok: false, error: chartTypeResult?.error || 'Chart type detection failed' };
+        }
+      }
+
 
       default:
         return { ok: false, error: 'Unknown command' };
