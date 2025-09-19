@@ -13,6 +13,34 @@ export function bootstrap({ host, plugin, selection, events, commands }) {
     logger.info('Selection result:', res);
     logger.info('🚀 lifecycle.js 选择变化回调被触发');
 
+    // 首先检查是否是图表绑定事件
+    if (res && res.type && (res.type === 'chart-anchor-exists' || res.type === 'chart-anchor-created')) {
+      logger.info('📊 检测到图表绑定事件，直接发送到宿主:', res);
+
+      if (res.type === 'chart-anchor-exists') {
+        host.sendInfo('chartBindingExists', {
+          success: true,
+          chartId: res.chartId,
+          chartType: res.chartType,
+          meta: res.meta,
+          fingerprint: res.fingerprint,
+          message: '图表已存在绑定'
+        });
+      } else if (res.type === 'chart-anchor-created') {
+        host.sendInfo('chartBindingCreated', {
+          success: true,
+          chartId: res.chartId,
+          chartType: res.chartType,
+          meta: res.meta,
+          fingerprint: res.fingerprint,
+          message: '图表绑定已创建'
+        });
+      }
+
+      // 图表事件已处理，直接返回
+      return;
+    }
+
     events.emit(EVENTS.SELECTION_CHANGED_FIRED);
     events.emit(EVENTS.ACTIVE_SDT, res);
 

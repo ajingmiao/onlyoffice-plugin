@@ -14,7 +14,21 @@ export class SelectionService {
         try {
           var result;
 
-          if (contentControlData && contentControlData.tag) {
+          // 检查是否是图表绑定事件
+          if (contentControlData && contentControlData.type &&
+              (contentControlData.type === 'chart-anchor-exists' ||
+               contentControlData.type === 'chart-anchor-created')) {
+            // 处理图表绑定事件
+            console.log('📊 收到图表绑定事件，类型:', contentControlData.type);
+            result = {
+              type: contentControlData.type,
+              meta: contentControlData.meta,
+              fingerprint: contentControlData.fingerprint,
+              chartId: contentControlData.meta?.chartId,
+              chartType: contentControlData.meta?.chartType
+            };
+            console.log('📊 处理后的图表绑定结果:', result);
+          } else if (contentControlData && contentControlData.tag) {
             // 如果传递了内容控件数据，直接使用
             console.log('✅ 收到内容控件数据，直接使用');
             result = {
