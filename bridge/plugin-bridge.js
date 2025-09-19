@@ -14,9 +14,19 @@ import { logger } from '../core/logger.js';
 
   function safeCb(payload) {
     try {
-      if (typeof _onEvent === 'function') _onEvent(payload);
+      _logger.info('📨 safeCb 被调用，payload:', payload);
+      _logger.info('📨 _onEvent 类型:', typeof _onEvent);
+
+      if (typeof _onEvent === 'function') {
+        _logger.info('📨 调用 _onEvent...');
+        _onEvent(payload);
+        _logger.info('📨 _onEvent 调用完成');
+      } else {
+        _logger.warn('📨 _onEvent 不是函数，无法发送事件');
+      }
     } catch (e) {
-      try { _logger.error('[cb error]', e && e.message ? e.message : e); } catch (_) {}
+      _logger.error('📨 safeCb 调用出错:', e);
+      try { _logger.error('[cb error]', e && e.message ? e.message : e); } catch (_) { }
     }
   }
 
@@ -25,23 +35,31 @@ import { logger } from '../core/logger.js';
   // ===========================
   function install(opts) {
     opts = opts || {};
+    _logger.info('📦 ChartBinding.install 被调用，opts:', opts);
+
     if (opts.logger && typeof opts.logger.info === 'function') {
       _logger = opts.logger;
+      _logger.info('📦 Logger 设置完成');
     }
     if (typeof opts.onEvent === 'function') {
       _onEvent = opts.onEvent;
+      _logger.info('📦 onEvent 回调设置完成，类型:', typeof _onEvent);
+    } else {
+      _logger.warn('📦 onEvent 回调未设置或不是函数，类型:', typeof opts.onEvent);
     }
+
     // 注册点击事件（OnlyOffice 编辑器内部 onClick）
     global.Asc = global.Asc || {};
     global.Asc.plugin = global.Asc.plugin || {};
     global.Asc.plugin.event_onClick = handleOnClick;
+    _logger.info('📦 onClick 事件处理器注册完成');
   }
 
   // ===========================
   // 点击事件主处理
   // ===========================
   function handleOnClick(isSelectionUse) {
-    try { _logger.info('[onClick] triggered', { isSelectionUse: !!isSelectionUse }); } catch (_){}
+    try { _logger.info('[onClick] triggered', { isSelectionUse: !!isSelectionUse }); } catch (_) { }
 
     // 1) 先看当前是否点到内容控件（兼容旧锚点/其它 CC）
     try {
@@ -94,17 +112,12 @@ import { logger } from '../core/logger.js';
           _logger.info('🔍 准备执行图表检测沙箱代码...');
           global.Asc.scope = global.Asc.scope || {};
           global.Asc.scope.preferDrawing = !!isSelectionUse; // 仅作为参考
-        } catch (_){}
+        } catch (_) { }
 
         var funcStr = (function () {/*
         // =============== 沙箱开始 ===============
         console.log('🏁 沙箱代码开始执行');
 
-        // 测试沙箱环境的能力
-        console.log('🧪 测试沙箱环境:');
-        console.log('  typeof window:', typeof window);
-        console.log('  typeof global:', typeof global);
-        console.log('  typeof this:', typeof this);
 
         var out = { ok: true, action: 'none', message: '', meta: null, fingerprint: null, logs: [] };
         function dbg(){ try { out.logs.push(Array.prototype.join.call(arguments, ' ')); } catch (_e){} }
@@ -202,33 +215,58 @@ import { logger } from '../core/logger.js';
           try {
             var props = doc.GetCustomProperties();
             var key = 'chart-binding:' + fp;
+            console.log('🔍 查找绑定键:', key);
+            console.log('🔍 当前所有属性键:', Object.keys(props));
+
             var val = props.Get(key);
+            console.log('🔍 属性值:', val);
             if (!val) return null;
-            try { return JSON.parse(val); } catch(_){ return null; }
-          } catch(e){ console.log('读取绑定失败:', e); return null; }
+            try {
+              var result = JSON.parse(val);
+              console.log('🔍 解析后的绑定数据:', result);
+              return result;
+            } catch(_){
+              console.log('❌ 解析绑定数据失败');
+              return null;
+            }
+          } catch(e){
+            console.log('❌ 读取绑定失败:', e);
+            return null;
+          }
         }
         function setBindingByFingerprint(doc, fp, meta) {
           try {
             var props = doc.GetCustomProperties();
             var key = 'chart-binding:' + fp;
+            console.log('📝 写入绑定键:', key);
+            console.log('📝 写入绑定数据:', meta);
             props.Add(key, JSON.stringify(meta)); // 存在同名时覆盖
-          } catch(e){ console.log('写入绑定失败:', e); }
+            console.log('✅ 绑定数据写入完成');
+          } catch(e){
+            console.log('❌ 写入绑定失败:', e);
+          }
         }
 
         console.log('📄 获取文档对象...');
         var doc = getDoc();
         if (!doc) {
-          console.log('❌ 无法获取文档对象');
+          console.log('❌ 无法获取文档对象 - 沙箱环境可能无法访问API');
           out.ok = false;
           out.action = 'error';
           out.message = '无法获取文档对象';
           return out;
         }
+        console.log('✅ 成功获取文档对象');
 
         // 先看是否选中图表
         console.log('🎯 检查选中的绘图对象...');
         var selected = null;
-        try { selected = doc.GetSelectedDrawings ? doc.GetSelectedDrawings() : null; } catch(e){ console.log('GetSelectedDrawings失败:', e); }
+        try {
+          selected = doc.GetSelectedDrawings ? doc.GetSelectedDrawings() : null;
+          console.log('📊 GetSelectedDrawings 结果:', selected ? selected.length : 'null');
+        } catch(e){
+          console.log('GetSelectedDrawings失败:', e);
+        }
         dbg('🎯 选中的绘图对象数量:', selected ? selected.length : 0);
 
         if (!selected || !selected.length) {
@@ -238,7 +276,7 @@ import { logger } from '../core/logger.js';
           if (range) {
             out.action = 'text-click';
             out.message = '点击文本区域，跳过图表绑定';
-            console.log('📝 检测到文本点击');
+            console.log('📝 检测到文本点击，跳过图表绑定');
             return out;
           }
           out.action = 'no-user-chart';
@@ -259,30 +297,10 @@ import { logger } from '../core/logger.js';
           out.action = 'exists';
           out.meta = existed;
           out.message = '已存在图表绑定（自定义属性）';
-          console.log('✅ 发现已存在的绑定');
+          console.log('✅ 发现已存在的绑定，数据:', existed);
+          console.log('📊 已存在的图表ID:', existed.chartId);
+          console.log('📊 已存在的图表类型:', existed.chartType);
 
-          // 在沙箱内部直接通知外部
-          try {
-            console.log('🔗 尝试沙箱内部通知:');
-            console.log('  typeof window:', typeof window);
-            console.log('  window.ChartBindingNotify:', typeof (typeof window !== 'undefined' ? window.ChartBindingNotify : 'undefined'));
-
-            if (typeof window !== 'undefined' && window.ChartBindingNotify) {
-              window.ChartBindingNotify({
-                type: 'chart-binding-exists',
-                meta: existed,
-                fingerprint: fp
-              });
-              console.log('✅ 已通过 ChartBindingNotify 发送存在事件');
-            } else {
-              console.log('❌ 沙箱内部无法访问 window.ChartBindingNotify');
-              console.log('  window:', typeof window);
-              console.log('  ChartBindingNotify:', typeof window !== 'undefined' ? typeof window.ChartBindingNotify : 'window不存在');
-            }
-          } catch (notifyError) {
-            console.log('⚠️ ChartBindingNotify 调用失败:', notifyError);
-          }
-          console.log('已经绑定的返回数据对象...',out);
           return out;
         }
 
@@ -312,156 +330,89 @@ import { logger } from '../core/logger.js';
         out.message = '已写入绑定到文档自定义属性';
         console.log('✅ 沙箱代码执行完成，准备返回结果');
 
-        // 在沙箱内部直接通知外部
+        // 沙箱通信方案：在文档自定义属性中写入临时结果
         try {
-          if (typeof window !== 'undefined' && window.ChartBindingNotify) {
-            window.ChartBindingNotify({
-              type: 'chart-binding-created',
-              meta: meta,
-              fingerprint: fp
-            });
-            console.log('✅ 已通过 ChartBindingNotify 发送创建事件');
-          }
-        } catch (notifyError) {
-          console.log('⚠️ ChartBindingNotify 调用失败:', notifyError);
+          var tempKey = 'temp-chart-result-' + Date.now();
+          var props = doc.GetCustomProperties();
+          props.Add(tempKey, JSON.stringify({
+            timestamp: Date.now(),
+            result: out
+          }));
+          console.log('📝 沙箱结果已写入临时属性:', tempKey);
+        } catch (writeErr) {
+          console.log('写入临时结果失败:', writeErr);
         }
 
         return out;
         // =============== 沙箱结束 ===============
       */}).toString().replace(/^function\s*\(\)\s*\{\/\*|\*\/\}\s*$/g, '');
 
-      try {
-        // 设置沙箱内部可以直接调用的通知函数
-        window.ChartBindingNotify = function(payload) {
-          _logger.info('📨 沙箱内部通知:', payload);
-          safeCb(payload);
-        };
-
-        // 先测试沙箱代码是否有语法问题
         try {
-          var testFunc = new Function(funcStr);
-          _logger.info('✅ 沙箱代码语法检查通过');
-        } catch (syntaxError) {
-          _logger.error('🚨 沙箱代码语法错误:', syntaxError.message);
-          _logger.info('funcStr 前100字符:', funcStr.substring(0, 100));
-          safeCb({ type: 'error', message: '沙箱代码语法错误: ' + syntaxError.message });
-          return;
-        }
 
-        // 尝试多种 callCommand 调用方式来解决回调问题
-        _logger.info('📞 尝试不同的 callCommand 调用方式...');
+          window.Asc.scope.ccPr = ccPr;
+          const P = window.Asc.plugin;
 
-        // 方法1：标准调用（你说这个不回调）
-        try {
-          global.Asc.plugin.callCommand(new Function(funcStr), function(info) {
-            _logger.info('🎉 方法1回调执行:', info);
-            if (info && info.ok) {
-              _logger.info('📊 图表检测成功，通知外部');
-              if (info.action === 'exists' && info.meta) {
-                safeCb({
-                  type: 'chart-binding-exists',
-                  meta: info.meta,
-                  fingerprint: info.fingerprint
-                });
-              } else if (info.action === 'created' && info.meta) {
-                safeCb({
-                  type: 'chart-binding-created',
-                  meta: info.meta,
-                  fingerprint: info.fingerprint
-                });
-              }
-            }
-          });
-        } catch (e1) {
-          _logger.error('方法1失败:', e1);
-        }
+          try {
+            var testFunc = new Function(funcStr);
+            _logger.info('✅ 沙箱代码语法检查通过');
+          } catch (syntaxError) {
+            _logger.error('🚨 沙箱代码语法错误:', syntaxError.message);
+            safeCb({ type: 'error', message: '沙箱代码语法错误: ' + syntaxError.message });
+            return;
+          }
+          
+          //把原始沙箱也改成延迟执行
+          function callInNextTick(fn, cb) {
+            setTimeout(() => P.callCommand(fn, false, false, cb), 0);
+          }
 
-        // 方法2：异步调用
-        try {
-          global.Asc.plugin.callCommand(new Function(funcStr), function(info) {
-            _logger.info('🎉 方法2异步回调执行:', info);
-            if (info && info.ok) {
-              if (info.action === 'exists' && info.meta) {
-                safeCb({
-                  type: 'chart-binding-exists',
-                  meta: info.meta,
-                  fingerprint: info.fingerprint
-                });
-              } else if (info.action === 'created' && info.meta) {
-                safeCb({
-                  type: 'chart-binding-created',
-                  meta: info.meta,
-                  fingerprint: info.fingerprint
-                });
-              }
-            }
-          });
-        } catch (e2) {
-          _logger.error('方法2失败:', e2);
-        }
+          callInNextTick(function () { return 2; }, function (ret) {
+            console.log('✅ 测试回调成功:', ret);
 
-        // 方法4：使用全局变量通信（绕过 callCommand 回调限制）
-        _logger.info('📞 方法4：使用全局变量通信...');
-        try {
-          // 设置全局变量来接收沙箱结果
-          global.ChartDetectionResult = null;
+            // 测试成功后，再执行原始沙箱
+            callInNextTick(new Function(funcStr), function (info) {
+              _logger.info('🎉 延迟原始沙箱回调:', info);
 
-          // 修改沙箱代码，让它把结果写到全局变量
-          var modifiedFuncStr = funcStr.replace(
-            'return out;',
-            'try { if (typeof global !== "undefined") global.ChartDetectionResult = out; } catch(_){} return out;'
-          );
+              // 详细分析返回的数据
+              _logger.info('📊 沙箱返回数据类型:', typeof info);
+              _logger.info('📊 沙箱返回数据结构:', info ? Object.keys(info) : 'null');
 
-          global.Asc.plugin.callCommand(new Function(modifiedFuncStr), function(info) {
-            _logger.info('🎉 方法4回调（如果执行）:', info);
-          });
+              // 处理沙箱返回的结果
+              if (info && info.ok) {
+                _logger.info('📊 沙箱执行成功，action:', info.action);
 
-          // 轮询检查全局变量
-          var pollCount = 0;
-          var pollInterval = setInterval(function() {
-            pollCount++;
-            if (global.ChartDetectionResult) {
-              clearInterval(pollInterval);
-              var result = global.ChartDetectionResult;
-              _logger.info('📊 通过全局变量获取到结果:', result);
-              global.ChartDetectionResult = null; // 清理
-
-              if (result.ok) {
-                if (result.action === 'exists' && result.meta) {
+                if (info.action === 'exists' && info.meta) {
+                  _logger.info('📊 触发 chart-binding-exists 事件');
                   safeCb({
                     type: 'chart-binding-exists',
-                    meta: result.meta,
-                    fingerprint: result.fingerprint
+                    meta: info.meta,
+                    fingerprint: info.fingerprint
                   });
-                } else if (result.action === 'created' && result.meta) {
+                } else if (info.action === 'created' && info.meta) {
+                  _logger.info('📊 触发 chart-binding-created 事件');
                   safeCb({
                     type: 'chart-binding-created',
-                    meta: result.meta,
-                    fingerprint: result.fingerprint
+                    meta: info.meta,
+                    fingerprint: info.fingerprint
                   });
+                } else if (info.action === 'text-click') {
+                  _logger.info('📊 检测到文本点击，不发送图表事件');
+                } else if (info.action === 'no-user-chart') {
+                  _logger.info('📊 检测到无图表选择');
                 } else {
-                  safeCb({
-                    type: 'chart-detection-info',
-                    message: result.message || '图表检测完成',
-                    action: result.action
-                  });
+                  _logger.info('📊 其他沙箱结果 action:', info.action, 'meta存在:', !!info.meta);
                 }
+              } else {
+                _logger.warn('📊 沙箱执行失败或ok为假:', info);
               }
-            } else if (pollCount > 20) { // 2秒后超时
-              clearInterval(pollInterval);
-              _logger.warn('⏰ 全局变量轮询超时');
-            }
-          }, 100);
+            });
+          });
 
-        } catch (e4) {
-          _logger.error('方法4失败:', e4);
+        } catch (callError) {
+          _logger.error('🚨 执行失败:', callError);
+          safeCb({ type: 'error', message: '执行失败: ' + callError.message });
         }
-
-      } catch (callError) {
-        _logger.error('🚨 执行失败:', callError);
-        safeCb({ type: 'error', message: '执行失败: ' + callError.message });
-      }
-    }); // GetCurrentContentControlPr 回调结束
+      }); // GetCurrentContentControlPr 回调结束
     } catch (executeError) {
       _logger.error('🚨 executeMethod 调用失败:', executeError);
       safeCb({ type: 'error', message: 'executeMethod 调用失败: ' + executeError.message });
@@ -475,7 +426,7 @@ import { logger } from '../core/logger.js';
   // 返回：[{ key, meta }, ...]
   // ===========================
   function listBindings(cb) {
-    var funcStr = (function(){/*
+    var funcStr = (function () {/*
       var out = { ok: true, bindings: [], logs: [] };
       function dbg(){ try { out.logs.push(Array.prototype.join.call(arguments, ' ')); } catch (_e){} }
       var doc = null;
@@ -507,10 +458,10 @@ import { logger } from '../core/logger.js';
 
     global.Asc.plugin.callCommand(new Function(funcStr), function (info) {
       if (!info || info.ok === false) {
-        cb && cb({ ok:false, message: info && info.message });
+        cb && cb({ ok: false, message: info && info.message });
         return;
       }
-      cb && cb({ ok:true, bindings: info.bindings || [] });
+      cb && cb({ ok: true, bindings: info.bindings || [] });
     });
   }
 
@@ -520,7 +471,7 @@ import { logger } from '../core/logger.js';
   // ===========================
   function upsertBindingForSelectedChart(payload, cb) {
     payload = payload || {};
-    var funcStr = (function(){/*
+    var funcStr = (function () {/*
       var out = { ok:true, action:'none', meta:null, fingerprint:null, message:'', logs:[] };
       function dbg(){ try { out.logs.push(Array.prototype.join.call(arguments, ' ')); } catch (_e){} }
 
@@ -627,11 +578,11 @@ import { logger } from '../core/logger.js';
       return out;
     */}).toString().replace(/^function\s*\(\)\s*\{\/\*|\*\/\}\s*$/g, '');
 
-    try { global.Asc.scope = global.Asc.scope || {}; global.Asc.scope._cb_payload = payload; } catch(_){}
+    try { global.Asc.scope = global.Asc.scope || {}; global.Asc.scope._cb_payload = payload; } catch (_) { }
 
-    global.Asc.plugin.callCommand(new Function(funcStr), function(info){
-      if (!info || info.ok === false) { cb && cb({ ok:false, message: info && info.message }); return; }
-      cb && cb({ ok:true, action: info.action, meta: info.meta, fingerprint: info.fingerprint });
+    global.Asc.plugin.callCommand(new Function(funcStr), function (info) {
+      if (!info || info.ok === false) { cb && cb({ ok: false, message: info && info.message }); return; }
+      cb && cb({ ok: true, action: info.action, meta: info.meta, fingerprint: info.fingerprint });
     });
   }
 
@@ -640,9 +591,9 @@ import { logger } from '../core/logger.js';
   // （如你确认 API 支持真正 Remove，可改为 Remove(key)）
   // ===========================
   function removeBindingByFingerprint(fingerprint, cb) {
-    if (!fingerprint) { cb && cb({ ok:false, message:'fingerprint 为空' }); return; }
+    if (!fingerprint) { cb && cb({ ok: false, message: 'fingerprint 为空' }); return; }
 
-    var funcStr = (function(){/*
+    var funcStr = (function () {/*
       var out = { ok:true, message:'' };
       var doc=null; try{ doc=Api.GetDocument(); }catch(e){}
       if(!doc){ out.ok=false; out.message='无法获取文档对象'; return out; }
@@ -657,11 +608,11 @@ import { logger } from '../core/logger.js';
       return out;
     */}).toString().replace(/^function\s*\(\)\s*\{\/\*|\*\/\}\s*$/g, '');
 
-    try { global.Asc.scope = global.Asc.scope || {}; global.Asc.scope._fp = fingerprint; } catch(_){}
+    try { global.Asc.scope = global.Asc.scope || {}; global.Asc.scope._fp = fingerprint; } catch (_) { }
 
-    global.Asc.plugin.callCommand(new Function(funcStr), function(info){
-      if (!info || info.ok === false) { cb && cb({ ok:false, message: info && info.message }); return; }
-      cb && cb({ ok:true, message: info.message });
+    global.Asc.plugin.callCommand(new Function(funcStr), function (info) {
+      if (!info || info.ok === false) { cb && cb({ ok: false, message: info && info.message }); return; }
+      cb && cb({ ok: true, message: info.message });
     });
   }
 
@@ -694,7 +645,7 @@ export class PluginBridge {
     // 初始化 ChartBinding 系统，但保留原有的选择变化逻辑
     window.ChartBinding.install({
       logger: logger,
-      onEvent: function(payload) {
+      onEvent: function (payload) {
         logger.info('ChartBinding event:', payload);
 
         // 将 ChartBinding 事件转换为兼容的回调格式

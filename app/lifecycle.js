@@ -22,7 +22,6 @@ export function bootstrap({ host, plugin, selection, events, commands }) {
         // 检查链接控件
         logger.info('Checking for link control after selection change...');
         const linkResult = await commands.dispatch({ command: COMMANDS.LINK_CLICKED });
-        logger.info('Link check result:', linkResult);
 
         if (linkResult.ok && linkResult.data) {
           logger.info('Link control detected, sending to host:', linkResult.data);
