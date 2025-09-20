@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>测试重构后的代码</title>
+</head>
+<body>
+    <h1>Plugin Bridge 重构测试</h1>
+    <div id="log"></div>
+
+    <script type="module">
+        import { PluginBridge } from './bridge/plugin-bridge.js';
+
+        const logElement = document.getElementById('log');
+        function log(message) {
+            console.log(message);
+            logElement.innerHTML += `<div>${new Date().toLocaleTimeString()}: ${message}</div>`;
+        }
+
+        // 模拟 OnlyOffice 环境
+        window.Asc = {
+            plugin: {
+                executeMethod: (method, params, callback) => {
+                    log(`Mock executeMethod: ${method}`);
+                    if (callback) {
+                        setTimeout(() => {
+                            callback({ Tag: '', Alias: '' }); // 模拟空内容控件
+                        }, 100);
+                    }
+                },
+                callCommand: (fn, callback) => {
+                    log('Mock callCommand executed');
+                    try {
+                        const result = fn();
+                        if (callback) {
+                            setTimeout(() => {
+                                callback(result);
+                            }, 50);
+                        }
+                    } catch (error) {
+                        log(`Mock callCommand error: ${error.message}`);
+                    }
+                }
+            }
+        };
+
+        // 模拟 OnlyOffice API
+        window.Api = {
+            GetDocument: () => ({
+                GetSelectedDrawings: () => null, // 模拟未选中图表
+                GetRangeBySelect: () => null,
+                GetCustomProperties: () => ({
+                    Get: () => null,
+                    Add: () => {}
+                })
+            })
+        };
+
+        // 测试重构后的代码
+        try {
+            const bridge = new PluginBridge();
+
+            bridge.onInit(() => {
+                log('✅ Plugin initialized');
+            });
+
+            bridge.onSelectionChanged((event) => {
+                log(`📝 Selection changed event: ${JSON.stringify(event)}`);
+            });
+
+            // 模拟点击事件
+            setTimeout(() => {
+                log('🖱️ 模拟点击事件...');
+                if (window.Asc?.plugin?.event_onClick) {
+                    window.Asc.plugin.event_onClick(false);
+                }
+            }, 1000);
+
+            log('✅ Plugin Bridge 重构测试启动成功');
+
+        } catch (error) {
+            log(`❌ 测试失败: ${error.message}`);
+            console.error(error);
+        }
+    </script>
+</body>
+</html>
