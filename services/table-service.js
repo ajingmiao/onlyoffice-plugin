@@ -441,14 +441,12 @@ export class TableService {
                 }
 
                 // 检测文档中的所有表格
-                console.log('扫描文档中的所有表格...');
                 var foundTables = [];
 
                 for (var i = 0; i < 50; i++) {
                     try {
                         var element = doc.GetElement(i);
                         if (!element) {
-                            console.log(`文档元素 ${i}: null，结束遍历`);
                             break;
                         }
 
@@ -457,10 +455,8 @@ export class TableService {
                             elementType = element.GetClassType();
                         }
 
-                        console.log(`文档元素 ${i}: ${elementType}`);
 
                         if (elementType === 'CTable') {
-                            console.log(`✅ 发现表格在位置 ${i}!`);
 
                             // 提取表格数据
                             var tableData = {
@@ -472,7 +468,6 @@ export class TableService {
 
                             if (typeof element.GetRowsCount === 'function') {
                                 tableData.rows = element.GetRowsCount();
-                                console.log(`表格 ${i} 行数:`, tableData.rows);
 
                                 // 提取表格内容（前5行）
                                 for (var r = 0; r < Math.min(tableData.rows, 5); r++) {
@@ -510,7 +505,6 @@ export class TableService {
                                                     }
                                                 }
                                                 tableData.content.push(rowData);
-                                                console.log(`表格 ${i} 第 ${r} 行:`, rowData);
                                             }
                                         }
                                     } catch (rowError) {
@@ -526,7 +520,6 @@ export class TableService {
                     }
                 }
 
-                console.log(`总共发现 ${foundTables.length} 个表格`);
 
                 if (foundTables.length > 0) {
                     // 简单策略：返回最后一个表格的信息（假设用户点击的是最近的表格）

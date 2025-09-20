@@ -41,6 +41,7 @@ export function createContainer() {
     elementDetectionService: elementDetection,
     chartBindingService: chartBinding,
     clickTypeDetector: clickTypeDetector,
+    hostBridge: host,
   });
 
   return {

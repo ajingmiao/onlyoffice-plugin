@@ -15,7 +15,9 @@ export class ChartBindingService {
 
     /**
      * 为文档中的图表绑定隐藏数据
-     * @param {Object} chartData - 包含chartId和数据的对象 {chartId: "xxx", data: {...}, metadata: {...}}
+     * @param {Object} chartData - 包含chartId和数据的对象，支持两种格式：
+     *   1. 嵌套格式: {chartId: "xxx", data: {...}, metadata: {...}}
+     *   2. 扁平格式: {type: "chart", rid: "xxx", chartType: "xxx", tag: "...", chartId: "xxx"}
      */
     async bindDataToChart(chartData) {
         console.log('开始图表数据绑定流程');
@@ -33,22 +35,64 @@ export class ChartBindingService {
             };
         }
 
-        if (!chartData.data || !chartData.metadata) {
-            console.log('❌ 未收到有效的图表数据，无法进行绑定');
+        // 适配扁平数据结构 - 检测是否为新的扁平格式
+        let normalizedData = chartData;
+        if (chartData.type && chartData.rid && !chartData.data && !chartData.metadata) {
+            console.log('🔄 检测到扁平数据格式，进行数据结构转换...');
+
+            // 解析tag字段中的JSON数据
+            let tagData = {};
+            if (chartData.tag) {
+                try {
+                    tagData = JSON.parse(chartData.tag);
+                    console.log('📋 解析tag数据:', tagData);
+                } catch (e) {
+                    console.log('⚠️ tag数据解析失败，使用原始字符串:', chartData.tag);
+                    tagData = { rawTag: chartData.tag };
+                }
+            }
+
+            // 转换为标准的嵌套格式
+            normalizedData = {
+                chartId: chartData.chartId,
+                data: {
+                    type: chartData.type,
+                    rid: chartData.rid,
+                    chartType: chartData.chartType,
+                    tag: chartData.tag,
+                    tagData: tagData,
+                    originalFormat: 'flat'
+                },
+                metadata: {
+                    sourceFormat: 'flat',
+                    convertedAt: new Date().toISOString(),
+                    trackId: tagData.trackId || null,
+                    groupFields: tagData.groupFields || [],
+                    timestamp: tagData._t || Date.now()
+                }
+            };
+
+            console.log('✅ 数据格式转换完成:', normalizedData);
+        }
+
+        // 验证转换后的数据结构
+        if (!normalizedData.data || !normalizedData.metadata) {
+            console.log('❌ 数据结构验证失败，缺少必要字段');
             return {
                 success: false,
-                error: '未从宿主页面接收到有效的图表数据，请确保调用时传递了完整的数据结构',
+                error: '数据结构不完整，请确保包含data和metadata字段，或提供有效的扁平格式数据',
                 data: {
-                    timestamp: new Date().toLocaleString()
+                    timestamp: new Date().toLocaleString(),
+                    receivedData: chartData
                 }
             };
         }
 
-        const targetChartId = chartData.chartId;
+        const targetChartId = normalizedData.chartId;
         console.log('🎯 目标图表ID:', targetChartId);
 
         // 由于runInDoc是隔离环境，将数据直接嵌入到函数体中
-        const chartDataJson = JSON.stringify(chartData);
+        const chartDataJson = JSON.stringify(normalizedData);
         console.log('🔍 准备嵌入的数据JSON长度:', chartDataJson.length);
 
         // 创建包含数据的函数字符串，使用与plugin-bridge.js一致的方式
@@ -176,14 +220,42 @@ export class ChartBindingService {
                 }
 
                 // 合并新的数据
+                console.log('🔄 开始更新绑定数据...');
+                console.log('🆔 旧绑定数据:', updatedBinding);
+                console.log('📦 新绑定数据 bindingData.data:', bindingData.data);
+                console.log('📦 新绑定数据 bindingData.metadata:', bindingData.metadata);
+
                 updatedBinding.boundData = bindingData.data;
                 updatedBinding.metadata = bindingData.metadata;
                 updatedBinding.lastUpdated = new Date().toISOString();
 
-                // 保存更新后的绑定
-                props.Add(bindingKey, JSON.stringify(updatedBinding));
+                // 保存重要的tag信息
+                if (bindingData.data && bindingData.data.tag) {
+                    console.log('📌 更新tag数据: 从', updatedBinding.tag, '到', bindingData.data.tag);
+                    updatedBinding.tag = bindingData.data.tag;
+                    updatedBinding.tagData = bindingData.data.tagData;
+                }
 
-                console.log('✅ 图表数据绑定完成');
+                // 保存图表类型信息
+                if (bindingData.data && bindingData.data.chartType) {
+                    console.log('📊 更新图表类型: 从', updatedBinding.chartType, '到', bindingData.data.chartType);
+                    updatedBinding.chartType = bindingData.data.chartType;
+                }
+
+                // 保存rid信息
+                if (bindingData.data && bindingData.data.rid) {
+                    console.log('🆔 更新rid: 从', updatedBinding.rid, '到', bindingData.data.rid);
+                    updatedBinding.rid = bindingData.data.rid;
+                }
+
+                // 保存更新后的绑定
+                try {
+                    props.Add(bindingKey, JSON.stringify(updatedBinding));
+                    console.log('✅ 图表数据绑定完成');
+                } catch (saveError) {
+                    console.log('❌ 保存绑定数据失败:', saveError);
+                    throw saveError;
+                }
 
                 return {
                     success: true,
@@ -238,7 +310,7 @@ export class ChartBindingService {
         try {
             if (!window.Asc) window.Asc = {};
             if (!window.Asc.scope) window.Asc.scope = {};
-            window.Asc.scope._cb_chartData = chartData;
+            window.Asc.scope._cb_chartData = normalizedData;
             console.log('✅ 数据已设置到 Asc.scope._cb_chartData');
         } catch (scopeError) {
             console.error('❌ 设置scope数据失败:', scopeError);
@@ -262,25 +334,28 @@ export class ChartBindingService {
           }
           
         return new Promise((resolve) => {
-            this.editor.runInDoc(new Function(funcStr), (result) => {
-                console.log('📋 图表绑定沙箱执行结果:', result);
+            this.editor.runInDoc(new Function(funcStr), {
+                async: false,
+                cb: (result) => {
+                    console.log('📋 图表绑定沙箱执行结果:', result);
 
-                if (result && result.success) {
-                    console.log('✅ 图表数据绑定成功');
-                    resolve({
-                        success: true,
-                        message: result.message,
-                        chartId: result.chartId,
-                        boundData: result.boundData,
-                        timestamp: result.timestamp
-                    });
-                } else {
-                    console.log('❌ 图表数据绑定失败');
-                    resolve({
-                        success: false,
-                        error: result ? result.error : '图表绑定执行失败',
-                        chartId: targetChartId
-                    });
+                    if (result && result.success) {
+                        console.log('✅ 图表数据绑定成功');
+                        resolve({
+                            success: true,
+                            message: result.message,
+                            chartId: result.chartId,
+                            boundData: result.boundData,
+                            timestamp: result.timestamp
+                        });
+                    } else {
+                        console.log('❌ 图表数据绑定失败');
+                        resolve({
+                            success: false,
+                            error: result ? result.error : '图表绑定执行失败',
+                            chartId: targetChartId
+                        });
+                    }
                 }
             });
         });
@@ -290,16 +365,12 @@ export class ChartBindingService {
      * 检测图表点击并获取绑定的数据
      */
     async detectChartClick() {
-        console.log('开始图表点击检测流程');
-
         // 使用动态函数生成，完全避免作用域问题和SDK错误
         const funcStr = `
             const doc = Api.GetDocument();
-            console.log('=== 图表点击检测（超级安全模式）===');
 
             try {
                 // 🔒 完全内联的安全图表扫描，避免调用外部服务
-                console.log('🔒 开始超级安全模式图表扫描...');
 
                 const documentLevelCharts = [];
 
@@ -307,12 +378,10 @@ export class ChartBindingService {
                 try {
                     if (typeof doc.GetAllDrawingObjects === 'function') {
                         const docDrawingObjects = doc.GetAllDrawingObjects();
-                        console.log('📄 文档级绘图对象数量:', docDrawingObjects ? docDrawingObjects.length : 0);
 
                         if (docDrawingObjects && docDrawingObjects.length > 0) {
                             for (let j = 0; j < docDrawingObjects.length; j++) {
                                 const drawingObj = docDrawingObjects[j];
-                                console.log('📊 检查绘图对象 ' + j);
 
                                 let drawingType = 'unknown';
                                 try {
@@ -320,11 +389,8 @@ export class ChartBindingService {
                                         drawingType = drawingObj.GetClassType();
                                     }
                                 } catch (typeError) {
-                                    console.log('🚨 获取类型失败，使用默认类型');
                                     drawingType = 'unknown';
                                 }
-
-                                console.log('📊 绘图对象类型:', drawingType);
 
                                 // 检查是否是图表类型
                                 if (drawingType === 'chart' ||
@@ -332,8 +398,6 @@ export class ChartBindingService {
                                     drawingType.includes('Drawing') ||
                                     drawingType.includes('Shape') ||
                                     drawingType.includes('Image')) {
-
-                                    console.log('✅ 发现图表/图形:', drawingType);
 
                                     const chartInfo = {
                                         element: drawingObj,
@@ -361,7 +425,6 @@ export class ChartBindingService {
 
                 // 处理找到的图表 - 完全安全模式
                 documentLevelCharts.forEach(function(chartInfo) {
-                    console.log('🔒 安全处理图表:', chartInfo.index);
 
                     try {
                         // 完全安全的图表类型定义
@@ -383,7 +446,6 @@ export class ChartBindingService {
                             detailedChartType.confidence = 0.9;
                         }
 
-                        console.log('📊 超级安全图表类型:', detailedChartType);
 
                         // 生成安全的唯一标识符
                         const uniqueId = 'chart_safe_' + chartInfo.drawingIndex + '_' + Date.now();
@@ -400,31 +462,40 @@ export class ChartBindingService {
                             superSafeMode: true
                         };
 
-                        // 🔒 超级安全的数据检查 - 只访问内存存储
-                        console.log('🔒 安全检查内存中的绑定数据...');
-                        console.log('🔍 当前window.chartDataStorage状态:', window.chartDataStorage);
+                        // 🔒 从文档自定义属性获取绑定数据而不是内存存储
 
-                        if (window.chartDataStorage) {
-                            console.log('📦 内存存储中的所有键:', Object.keys(window.chartDataStorage));
-                            console.log('🎯 当前图表drawingIndex:', chartInfo.drawingIndex);
+                        // 生成图表指纹
+                        var fingerprint = generateChartFingerprint(drawingObj, doc);
+                        var bindingKey = 'chart-binding:' + fingerprint;
 
-                            for (const storageKey in window.chartDataStorage) {
-                                const storedData = window.chartDataStorage[storageKey];
-                                console.log('🔍 检查存储键:', storageKey, '数据drawingIndex:', storedData?.drawingIndex);
+                        try {
+                            var props = doc.GetCustomProperties();
+                            var bindingValue = props.Get(bindingKey);
 
-                                if (storedData && storedData.drawingIndex === chartInfo.drawingIndex) {
-                                    chartResult.boundData = storedData;
-                                    chartResult.hasBindingData = true;
-                                    chartResult.bindingMethod = 'memory-storage';
-                                    console.log('✅ 从内存找到绑定数据:', {
-                                        uniqueId: storedData.uniqueId,
-                                        title: storedData.boundData?.title
-                                    });
-                                    break;
+                            if (bindingValue) {
+                                var binding = JSON.parse(bindingValue);
+                                console.log('✅ 从文档属性找到绑定数据:', binding);
+
+                                chartResult.boundData = binding;
+                                chartResult.hasBindingData = true;
+                                chartResult.bindingMethod = 'document-properties';
+
+                                // 记录找到的重要信息
+                                console.log('📋 绑定数据包含字段:', Object.keys(binding));
+                                if (binding.tag) {
+                                    console.log('🔖 找到tag数据:', binding.tag);
                                 }
+                                if (binding.chartType) {
+                                    console.log('📊 找到图表类型:', binding.chartType);
+                                }
+                                if (binding.rid) {
+                                    console.log('🆔 找到rid:', binding.rid);
+                                }
+                            } else {
+                                console.log('⚠️ 未找到绑定数据，bindingKey:', bindingKey);
                             }
-                        } else {
-                            console.log('❌ window.chartDataStorage 不存在!');
+                        } catch (bindingError) {
+                            console.log('❌ 读取绑定数据失败:', bindingError.message);
                         }
 
                         if (!chartResult.hasBindingData) {
@@ -434,7 +505,6 @@ export class ChartBindingService {
                         chartDetectionResults.push(chartResult);
 
                     } catch (processError) {
-                        console.log('🚨 处理图表失败，添加基础记录:', processError.message);
 
                         // 添加一个最基础的记录
                         chartDetectionResults.push({
@@ -495,10 +565,16 @@ export class ChartBindingService {
                             chartInfo: targetChart,
                             chartTypeInfo: chartTypeInfo,
                             boundData: targetChart.boundData.boundData || targetChart.boundData,
+                            // 包含完整的绑定信息，特别是tag数据
                             bindingMetadata: {
-                                bindingId: targetChart.boundData.bindingId,
-                                boundAt: targetChart.boundData.boundAt,
-                                bindingMethod: targetChart.bindingMethod
+                                bindingId: targetChart.boundData.chartId,
+                                boundAt: targetChart.boundData.createdAt,
+                                bindingMethod: targetChart.bindingMethod,
+                                tag: targetChart.boundData.tag,
+                                tagData: targetChart.boundData.tagData,
+                                chartType: targetChart.boundData.chartType,
+                                rid: targetChart.boundData.rid,
+                                fingerprint: targetChart.boundData.fingerprint
                             },
                             detectionSummary: {
                                 totalChartsFound: chartDetectionResults.length,
@@ -513,6 +589,8 @@ export class ChartBindingService {
                     console.log('📊 图表标题:', result.data.boundData?.title);
                     console.log('📊 图表类型:', result.data.chartTypeInfo?.chartType);
                     console.log('📊 数据源:', result.data.boundData?.dataSource);
+                    console.log('🔖 Tag数据:', result.data.bindingMetadata?.tag);
+                    console.log('🆔 RID:', result.data.bindingMetadata?.rid);
 
                     return result;
 
@@ -575,7 +653,7 @@ export class ChartBindingService {
 
         // 使用new Function执行完全隔离的安全代码
         const dynamicFunction = new Function(funcStr);
-        return this.editor.runInDoc(dynamicFunction);
+        return this.editor.runInDoc(dynamicFunction, { async: false });
     }
 
     /**

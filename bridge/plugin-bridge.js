@@ -899,7 +899,22 @@ export class PluginBridge {
   }
 
   callCommand(fn, isAsync = false, callback) {
-    return window.Asc?.plugin?.callCommand?.(fn, isAsync, callback);
+    if (callback) {
+      // 有回调函数时，使用与plugin-bridge.js一致的callInNextTick模式
+      const P = window.Asc?.plugin;
+      if (!P || !P.callCommand) {
+        console.error('❌ OnlyOffice plugin API不可用');
+        callback && callback({ success: false, error: 'OnlyOffice plugin API不可用' });
+        return;
+      }
+
+      setTimeout(() => {
+        P.callCommand(fn, false, false, callback);
+      }, 0);
+    } else {
+      // 无回调函数时，直接调用
+      return window.Asc?.plugin?.callCommand?.(fn, isAsync);
+    }
   }
 
   onSelectionChanged(cb) {

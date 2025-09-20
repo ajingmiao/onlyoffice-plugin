@@ -1,7 +1,7 @@
 import { COMMANDS } from '../core/constants.js';
 
 export class CommandBus {
-  constructor({ sdtService, linkService, wordArtService, shapeService, tableService, selectionBindingService, elementDetectionService, chartBindingService, clickTypeDetector }) {
+  constructor({ sdtService, linkService, wordArtService, shapeService, tableService, selectionBindingService, elementDetectionService, chartBindingService, clickTypeDetector, hostBridge }) {
     this.sdt = sdtService;
     this.link = linkService;
     this.wordart = wordArtService;
@@ -11,6 +11,7 @@ export class CommandBus {
     this.elementDetection = elementDetectionService;
     this.chartBinding = chartBindingService;
     this.clickTypeDetector = clickTypeDetector;
+    this.host = hostBridge;
   }
 
   async dispatch(cmd) {
@@ -207,9 +208,53 @@ export class CommandBus {
         const chartResult = await this.chartBinding.bindDataToChart(data);
         // 清理临时数据
         this.chartBinding.cleanupTempData();
+
         if (chartResult && chartResult.success) {
+          console.log('✅ 图表数据绑定成功，准备回调宿主');
+
+          // 发送回调给宿主，包含完整的绑定信息和原始tag数据
+          try {
+            this.host.sendInfo('CHART_BINDING_SUCCESS', {
+              success: true,
+              chartId: chartResult.chartId,
+              boundData: chartResult.boundData,
+              timestamp: chartResult.timestamp,
+              // 包含原始的宿主数据
+              originalData: {
+                type: data.type,
+                rid: data.rid,
+                chartType: data.chartType,
+                tag: data.tag,
+                chartId: data.chartId
+              },
+              // 包含转换后的数据结构
+              normalizedData: {
+                data: data.data || 'converted-from-flat',
+                metadata: data.metadata || 'converted-from-flat'
+              }
+            });
+            console.log('📤 图表绑定成功回调已发送给宿主');
+          } catch (callbackError) {
+            console.error('❌ 发送绑定成功回调失败:', callbackError);
+          }
+
           return { ok: true, data: chartResult };
         } else {
+          console.log('❌ 图表数据绑定失败');
+
+          // 发送失败回调给宿主
+          try {
+            this.host.sendInfo('CHART_BINDING_FAILED', {
+              success: false,
+              error: chartResult?.error || 'Chart data binding failed',
+              chartId: data?.chartId,
+              timestamp: new Date().toISOString()
+            });
+            console.log('📤 图表绑定失败回调已发送给宿主');
+          } catch (callbackError) {
+            console.error('❌ 发送绑定失败回调失败:', callbackError);
+          }
+
           return { ok: false, error: chartResult?.error || 'Chart data binding failed' };
         }
       }

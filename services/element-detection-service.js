@@ -45,12 +45,10 @@ export class ElementDetectionService {
                 };
 
                 // 扫描文档元素
-                console.log('开始扫描文档元素...');
                 for (var i = 0; i < 100; i++) {
                     try {
                         var element = doc.GetElement(i);
                         if (!element) {
-                            console.log(`文档元素 ${i}: null，结束遍历`);
                             break;
                         }
 
@@ -58,8 +56,6 @@ export class ElementDetectionService {
                         if (typeof element.GetClassType === 'function') {
                             elementType = element.GetClassType();
                         }
-
-                        console.log(`文档元素 ${i}: ${elementType}`);
 
                         // 检测表格
                         if (elementType === 'CTable') {
