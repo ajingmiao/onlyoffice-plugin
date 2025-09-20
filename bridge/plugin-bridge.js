@@ -343,154 +343,25 @@ import { logger } from '../core/logger.js';
           console.log('❌ 获取共享指纹生成函数失败:', e.message);
         }
 
-        // 如果共享函数不可用，直接在沙箱内定义
+        // 如果共享函数不可用，直接在沙箱内定义（使用新的内容优先算法）
         if (!buildChartFingerprint) {
-          console.log('🔧 使用沙箱内置指纹生成函数');
+          console.log('🔧 使用沙箱内置指纹生成函数（新算法）');
           buildChartFingerprint = function(sel, doc) {
             var parts = [];
             console.log('🔍 开始生成指纹，图表对象:', sel);
 
-            // 1) 精确位置索引（必须找到，否则报错）
-            var exactIndex = -1;
-            var all = null;
-
+            // 1) 图表类型（最重要的稳定标识）
             try {
-              all = doc.GetAllDrawingObjects ? doc.GetAllDrawingObjects() : null;
-              console.log('📊 文档中图表总数:', all ? all.length : 0);
-
-              if (!all || all.length === 0) {
-                throw new Error('无法获取文档中的绘图对象列表');
-              }
-
-              // 先尝试严格匹配
-              for (var i = 0; i < all.length; i++) {
-                if (all[i] === sel) {
-                  exactIndex = i;
-                  console.log('✅ 找到精确索引(严格匹配):', exactIndex);
-                  break;
-                }
-              }
-
-              // 如果严格匹配失败，尝试ID匹配
-              if (exactIndex < 0) {
-                console.log('⚠️ 严格匹配失败，尝试ID匹配...');
-                var selId = null;
-                try {
-                  if (sel && typeof sel.GetId === 'function') {
-                    selId = sel.GetId();
-                    console.log('🔍 当前图表ID:', selId);
-                  }
-                } catch(e) {}
-
-                if (selId) {
-                  for (var j = 0; j < all.length; j++) {
-                    try {
-                      if (all[j] && typeof all[j].GetId === 'function') {
-                        var allId = all[j].GetId();
-                        if (allId === selId) {
-                          exactIndex = j;
-                          console.log('✅ 找到精确索引(ID匹配):', exactIndex);
-                          break;
-                        }
-                      }
-                    } catch(e) {}
-                  }
-                }
-              }
-
-              // 如果ID匹配也失败，尝试属性匹配
-              if (exactIndex < 0) {
-                console.log('⚠️ ID匹配失败，尝试属性匹配...');
-                for (var k = 0; k < all.length; k++) {
-                  try {
-                    // 比较多个属性来判断是否是同一个对象
-                    var match = true;
-
-                    // 比较类型
-                    if (sel && typeof sel.GetClassType === 'function' &&
-                        all[k] && typeof all[k].GetClassType === 'function') {
-                      if (sel.GetClassType() !== all[k].GetClassType()) {
-                        match = false;
-                      }
-                    }
-
-                    // 比较尺寸
-                    if (match && sel && typeof sel.GetWidth === 'function' &&
-                        all[k] && typeof all[k].GetWidth === 'function') {
-                      var selW = sel.GetWidth();
-                      var allW = all[k].GetWidth();
-                      if (Math.abs(selW - allW) > 1) { // 允许1像素误差
-                        match = false;
-                      }
-                    }
-
-                    if (match && sel && typeof sel.GetHeight === 'function' &&
-                        all[k] && typeof all[k].GetHeight === 'function') {
-                      var selH = sel.GetHeight();
-                      var allH = all[k].GetHeight();
-                      if (Math.abs(selH - allH) > 1) { // 允许1像素误差
-                        match = false;
-                      }
-                    }
-
-                    if (match) {
-                      exactIndex = k;
-                      console.log('✅ 找到精确索引(属性匹配):', exactIndex);
-                      break;
-                    }
-                  } catch(e) {}
-                }
-              }
-
-              if (exactIndex < 0) {
-                throw new Error('无法在文档绘图对象列表中找到当前图表的索引位置');
-              }
-
-            } catch(e) {
-              console.error('❌ 获取图表索引失败:', e.message);
-              throw new Error('图表索引获取失败: ' + e.message);
-            }
-
-            // 必须的索引部分
-            parts.push('idx:' + exactIndex);
-            console.log('✅ 添加索引部分:', 'idx:' + exactIndex);
-
-            // 2) 内部ID（可选，增强唯一性）
-            try {
-              if (sel && typeof sel.GetId === 'function') {
-                var stableId = sel.GetId();
-                if (stableId) {
-                  parts.push('id:' + stableId);
-                  console.log('✅ 添加内部ID:', stableId);
-                }
-              }
-            } catch(e){
-              console.log('⚠️ 获取内部ID失败，继续执行:', e.message);
-            }
-
-            // 3) 图表类型（可选）
-            try {
-              if (sel && typeof sel.GetChart === 'function') {
-                var ch = sel.GetChart();
-                if (ch && typeof ch.GetChartType === 'function') {
-                  var type = ch.GetChartType();
-                  if (type && type !== 'error') {
-                    parts.push('type:' + type);
-                    console.log('✅ 添加图表类型:', type);
-                  }
-                }
-              } else if (sel && typeof sel.GetChartType === 'function') {
-                var type = sel.GetChartType();
-                if (type && type !== 'error') {
-                  parts.push('type:' + type);
-                  console.log('✅ 添加图表类型:', type);
-                }
+              var type = getChartType(sel);
+              if (type && type !== 'error') {
+                parts.push('type:' + type);
+                console.log('✅ 添加图表类型:', type);
               }
             } catch(e) {
               console.log('⚠️ 获取图表类型失败，继续执行:', e.message);
             }
 
-            // 4) 尺寸信息（可选）
+            // 2) 尺寸信息（相对稳定的物理特征）
             try {
               if (sel && typeof sel.GetWidth === 'function' && typeof sel.GetHeight === 'function') {
                 var w = sel.GetWidth();
@@ -505,7 +376,126 @@ import { logger } from '../core/logger.js';
               console.log('⚠️ 获取尺寸失败，继续执行:', e.message);
             }
 
-            // 必须至少有索引，如果没有就报错
+            // 3) 图表内容哈希（如果可以获取到图表数据）
+            try {
+              var contentHash = generateChartContentHash(sel);
+              if (contentHash) {
+                parts.push('content:' + contentHash);
+                console.log('✅ 添加内容哈希:', contentHash);
+              }
+            } catch(e) {
+              console.log('⚠️ 无法生成内容哈希:', e.message);
+            }
+
+            // 4) 只有在必要时才添加位置信息（作为辅助区分）
+            if (parts.length < 2) {
+              try {
+                var exactIndex = -1;
+                var all = doc.GetAllDrawingObjects ? doc.GetAllDrawingObjects() : null;
+                console.log('📊 文档中图表总数:', all ? all.length : 0);
+
+                if (all && all.length > 0) {
+                  // 先尝试严格匹配
+                  for (var i = 0; i < all.length; i++) {
+                    if (all[i] === sel) {
+                      exactIndex = i;
+                      console.log('✅ 找到精确索引(严格匹配):', exactIndex);
+                      break;
+                    }
+                  }
+
+                  // 如果严格匹配失败，尝试ID匹配
+                  if (exactIndex < 0) {
+                    console.log('⚠️ 严格匹配失败，尝试ID匹配...');
+                    var selId = null;
+                    try {
+                      if (sel && typeof sel.GetId === 'function') {
+                        selId = sel.GetId();
+                        console.log('🔍 当前图表ID:', selId);
+                      }
+                    } catch(e) {}
+
+                    if (selId) {
+                      for (var j = 0; j < all.length; j++) {
+                        try {
+                          if (all[j] && typeof all[j].GetId === 'function') {
+                            var allId = all[j].GetId();
+                            if (allId === selId) {
+                              exactIndex = j;
+                              console.log('✅ 找到精确索引(ID匹配):', exactIndex);
+                              break;
+                            }
+                          }
+                        } catch(e) {}
+                      }
+                    }
+                  }
+
+                  // 如果ID匹配也失败，尝试属性匹配
+                  if (exactIndex < 0) {
+                    console.log('⚠️ ID匹配失败，尝试属性匹配...');
+                    for (var k = 0; k < all.length; k++) {
+                      try {
+                        // 比较多个属性来判断是否是同一个对象
+                        var match = true;
+
+                        // 比较类型
+                        if (sel && typeof sel.GetClassType === 'function' &&
+                            all[k] && typeof all[k].GetClassType === 'function') {
+                          if (sel.GetClassType() !== all[k].GetClassType()) {
+                            match = false;
+                          }
+                        }
+
+                        // 比较尺寸
+                        if (match && sel && typeof sel.GetWidth === 'function' &&
+                            all[k] && typeof all[k].GetWidth === 'function') {
+                          var selW = sel.GetWidth();
+                          var allW = all[k].GetWidth();
+                          if (Math.abs(selW - allW) > 1) { // 允许1像素误差
+                            match = false;
+                          }
+                        }
+
+                        if (match && sel && typeof sel.GetHeight === 'function' &&
+                            all[k] && typeof all[k].GetHeight === 'function') {
+                          var selH = sel.GetHeight();
+                          var allH = all[k].GetHeight();
+                          if (Math.abs(selH - allH) > 1) { // 允许1像素误差
+                            match = false;
+                          }
+                        }
+
+                        if (match) {
+                          exactIndex = k;
+                          console.log('✅ 找到精确索引(属性匹配):', exactIndex);
+                          break;
+                        }
+                      } catch(e) {}
+                    }
+                  }
+
+                  if (exactIndex >= 0) {
+                    parts.push('idx:' + exactIndex);
+                    console.log('⚠️ 添加位置索引作为辅助: idx:' + exactIndex);
+                  }
+                }
+              } catch(e) {
+                console.log('⚠️ 获取位置索引失败:', e.message);
+              }
+            }
+
+            // 5) 文档上下文（总图表数，用于验证）
+            try {
+              var all = doc.GetAllDrawingObjects ? doc.GetAllDrawingObjects() : null;
+              var totalCharts = all ? all.length : 0;
+              parts.push('ctx:' + totalCharts);
+              console.log('✅ 添加文档上下文: ctx:' + totalCharts);
+            } catch(e) {
+              console.log('⚠️ 获取文档上下文失败:', e.message);
+            }
+
+            // 必须至少有图表类型或位置索引
             if (parts.length === 0) {
               throw new Error('无法生成任何有效的指纹部分');
             }
@@ -513,6 +503,51 @@ import { logger } from '../core/logger.js';
             var fingerprint = parts.join('|');
             console.log('🔖 最终生成指纹:', fingerprint);
             return fingerprint;
+
+            // 生成图表内容哈希（基于图表的内在特征）
+            function generateChartContentHash(sel) {
+              try {
+                var contentBuilder = [];
+
+                // 添加图表类型
+                var type = getChartType(sel);
+                if (type) {
+                  contentBuilder.push(type);
+                }
+
+                // 添加尺寸（量化为区间，增加稳定性）
+                if (sel && typeof sel.GetWidth === 'function' && typeof sel.GetHeight === 'function') {
+                  var w = sel.GetWidth();
+                  var h = sel.GetHeight();
+                  if (w && h) {
+                    var widthRange = Math.floor(w / 50) * 50; // 按50像素区间
+                    var heightRange = Math.floor(h / 50) * 50;
+                    contentBuilder.push(widthRange + 'x' + heightRange);
+                  }
+                }
+
+                if (contentBuilder.length > 0) {
+                  var content = contentBuilder.join('|');
+                  return simpleHash(content);
+                }
+
+                return null;
+              } catch (e) {
+                return null;
+              }
+            }
+
+            // 简单哈希函数
+            function simpleHash(str) {
+              var hash = 0;
+              if (str.length === 0) return hash.toString(36);
+              for (var i = 0; i < str.length; i++) {
+                var char = str.charCodeAt(i);
+                hash = ((hash << 5) - hash) + char;
+                hash = hash & hash; // 转换为32位整数
+              }
+              return Math.abs(hash).toString(36);
+            }
           };
         }
 
@@ -934,129 +969,11 @@ import { logger } from '../core/logger.js';
           return sharedFunc(sel, doc);
         }
 
-        // 降级方案：使用与主版本完全一致的逻辑
+        // 降级方案：使用新的内容优先算法
         var parts = [];
         console.log('🔍 开始生成指纹，图表对象:', sel);
 
-        // 1) 精确位置索引（必须找到，否则报错）
-        var exactIndex = -1;
-        var all = null;
-
-        try {
-          all = doc.GetAllDrawingObjects ? doc.GetAllDrawingObjects() : null;
-          console.log('📊 文档中图表总数:', all ? all.length : 0);
-
-          if (!all || all.length === 0) {
-            throw new Error('无法获取文档中的绘图对象列表');
-          }
-
-          // 先尝试严格匹配
-          for (var i = 0; i < all.length; i++) {
-            if (all[i] === sel) {
-              exactIndex = i;
-              console.log('✅ 找到精确索引(严格匹配):', exactIndex);
-              break;
-            }
-          }
-
-          // 如果严格匹配失败，尝试ID匹配
-          if (exactIndex < 0) {
-            console.log('⚠️ 严格匹配失败，尝试ID匹配...');
-            var selId = null;
-            try {
-              if (sel && typeof sel.GetId === 'function') {
-                selId = sel.GetId();
-                console.log('🔍 当前图表ID:', selId);
-              }
-            } catch(e) {}
-
-            if (selId) {
-              for (var j = 0; j < all.length; j++) {
-                try {
-                  if (all[j] && typeof all[j].GetId === 'function') {
-                    var allId = all[j].GetId();
-                    if (allId === selId) {
-                      exactIndex = j;
-                      console.log('✅ 找到精确索引(ID匹配):', exactIndex);
-                      break;
-                    }
-                  }
-                } catch(e) {}
-              }
-            }
-          }
-
-          // 如果ID匹配也失败，尝试属性匹配
-          if (exactIndex < 0) {
-            console.log('⚠️ ID匹配失败，尝试属性匹配...');
-            for (var k = 0; k < all.length; k++) {
-              try {
-                // 比较多个属性来判断是否是同一个对象
-                var match = true;
-
-                // 比较类型
-                if (sel && typeof sel.GetClassType === 'function' &&
-                    all[k] && typeof all[k].GetClassType === 'function') {
-                  if (sel.GetClassType() !== all[k].GetClassType()) {
-                    match = false;
-                  }
-                }
-
-                // 比较尺寸
-                if (match && sel && typeof sel.GetWidth === 'function' &&
-                    all[k] && typeof all[k].GetWidth === 'function') {
-                  var selW = sel.GetWidth();
-                  var allW = all[k].GetWidth();
-                  if (Math.abs(selW - allW) > 1) { // 允许1像素误差
-                    match = false;
-                  }
-                }
-
-                if (match && sel && typeof sel.GetHeight === 'function' &&
-                    all[k] && typeof all[k].GetHeight === 'function') {
-                  var selH = sel.GetHeight();
-                  var allH = all[k].GetHeight();
-                  if (Math.abs(selH - allH) > 1) { // 允许1像素误差
-                    match = false;
-                  }
-                }
-
-                if (match) {
-                  exactIndex = k;
-                  console.log('✅ 找到精确索引(属性匹配):', exactIndex);
-                  break;
-                }
-              } catch(e) {}
-            }
-          }
-
-          if (exactIndex < 0) {
-            throw new Error('无法在文档绘图对象列表中找到当前图表的索引位置');
-          }
-
-        } catch(e) {
-          console.error('❌ 获取图表索引失败:', e.message);
-          throw new Error('图表索引获取失败: ' + e.message);
-        }
-
-        // 必须的索引部分
-        parts.push('idx:' + exactIndex);
-        console.log('✅ 添加索引部分:', 'idx:' + exactIndex);
-
-        // 2) 内部ID（可选，增强唯一性）
-        try {
-          if (sel && typeof sel.GetId === 'function') {
-            var stableId = sel.GetId();
-            if (stableId) {
-              parts.push('id:' + stableId);
-              console.log('✅ 添加内部ID:', stableId);
-            }
-          }
-        } catch(e){
-          console.log('⚠️ 获取内部ID失败，继续执行:', e.message);
-        }
-
-        // 3) 图表类型（可选）
+        // 1) 图表类型（最重要的稳定标识）
         try {
           var type = getChartType(sel);
           if (type && type !== 'error') {
@@ -1067,7 +984,7 @@ import { logger } from '../core/logger.js';
           console.log('⚠️ 获取图表类型失败，继续执行:', e.message);
         }
 
-        // 4) 尺寸信息（可选）
+        // 2) 尺寸信息（相对稳定的物理特征）
         try {
           if (sel && typeof sel.GetWidth === 'function' && typeof sel.GetHeight === 'function') {
             var w = sel.GetWidth();
@@ -1082,7 +999,126 @@ import { logger } from '../core/logger.js';
           console.log('⚠️ 获取尺寸失败，继续执行:', e.message);
         }
 
-        // 必须至少有索引，如果没有就报错
+        // 3) 图表内容哈希（如果可以获取到图表数据）
+        try {
+          var contentHash = generateChartContentHashUpsert(sel);
+          if (contentHash) {
+            parts.push('content:' + contentHash);
+            console.log('✅ 添加内容哈希:', contentHash);
+          }
+        } catch(e) {
+          console.log('⚠️ 无法生成内容哈希:', e.message);
+        }
+
+        // 4) 只有在必要时才添加位置信息（作为辅助区分）
+        if (parts.length < 2) {
+          try {
+            var exactIndex = -1;
+            var all = doc.GetAllDrawingObjects ? doc.GetAllDrawingObjects() : null;
+            console.log('📊 文档中图表总数:', all ? all.length : 0);
+
+            if (all && all.length > 0) {
+              // 先尝试严格匹配
+              for (var i = 0; i < all.length; i++) {
+                if (all[i] === sel) {
+                  exactIndex = i;
+                  console.log('✅ 找到精确索引(严格匹配):', exactIndex);
+                  break;
+                }
+              }
+
+              // 如果严格匹配失败，尝试ID匹配
+              if (exactIndex < 0) {
+                console.log('⚠️ 严格匹配失败，尝试ID匹配...');
+                var selId = null;
+                try {
+                  if (sel && typeof sel.GetId === 'function') {
+                    selId = sel.GetId();
+                    console.log('🔍 当前图表ID:', selId);
+                  }
+                } catch(e) {}
+
+                if (selId) {
+                  for (var j = 0; j < all.length; j++) {
+                    try {
+                      if (all[j] && typeof all[j].GetId === 'function') {
+                        var allId = all[j].GetId();
+                        if (allId === selId) {
+                          exactIndex = j;
+                          console.log('✅ 找到精确索引(ID匹配):', exactIndex);
+                          break;
+                        }
+                      }
+                    } catch(e) {}
+                  }
+                }
+              }
+
+              // 如果ID匹配也失败，尝试属性匹配
+              if (exactIndex < 0) {
+                console.log('⚠️ ID匹配失败，尝试属性匹配...');
+                for (var k = 0; k < all.length; k++) {
+                  try {
+                    // 比较多个属性来判断是否是同一个对象
+                    var match = true;
+
+                    // 比较类型
+                    if (sel && typeof sel.GetClassType === 'function' &&
+                        all[k] && typeof all[k].GetClassType === 'function') {
+                      if (sel.GetClassType() !== all[k].GetClassType()) {
+                        match = false;
+                      }
+                    }
+
+                    // 比较尺寸
+                    if (match && sel && typeof sel.GetWidth === 'function' &&
+                        all[k] && typeof all[k].GetWidth === 'function') {
+                      var selW = sel.GetWidth();
+                      var allW = all[k].GetWidth();
+                      if (Math.abs(selW - allW) > 1) { // 允许1像素误差
+                        match = false;
+                      }
+                    }
+
+                    if (match && sel && typeof sel.GetHeight === 'function' &&
+                        all[k] && typeof all[k].GetHeight === 'function') {
+                      var selH = sel.GetHeight();
+                      var allH = all[k].GetHeight();
+                      if (Math.abs(selH - allH) > 1) { // 允许1像素误差
+                        match = false;
+                      }
+                    }
+
+                    if (match) {
+                      exactIndex = k;
+                      console.log('✅ 找到精确索引(属性匹配):', exactIndex);
+                      break;
+                    }
+                  } catch(e) {}
+                }
+              }
+
+              if (exactIndex >= 0) {
+                parts.push('idx:' + exactIndex);
+                console.log('⚠️ 添加位置索引作为辅助: idx:' + exactIndex);
+              }
+            }
+          } catch(e) {
+            console.log('⚠️ 获取位置索引失败:', e.message);
+          }
+        }
+
+        // 5) 文档上下文（总图表数，用于验证）
+        try {
+          var all = doc.GetAllDrawingObjects ? doc.GetAllDrawingObjects() : null;
+          var totalCharts = all ? all.length : 0;
+          parts.push('ctx:' + totalCharts);
+          console.log('✅ 添加文档上下文: ctx:' + totalCharts);
+        } catch(e) {
+          console.log('⚠️ 获取文档上下文失败:', e.message);
+        }
+
+        // 必须至少有图表类型或位置索引
         if (parts.length === 0) {
           throw new Error('无法生成任何有效的指纹部分');
         }
@@ -1090,6 +1126,51 @@ import { logger } from '../core/logger.js';
         var fingerprint = parts.join('|');
         console.log('🔖 最终生成指纹:', fingerprint);
         return fingerprint;
+
+        // 生成图表内容哈希（基于图表的内在特征）
+        function generateChartContentHashUpsert(sel) {
+          try {
+            var contentBuilder = [];
+
+            // 添加图表类型
+            var type = getChartType(sel);
+            if (type) {
+              contentBuilder.push(type);
+            }
+
+            // 添加尺寸（量化为区间，增加稳定性）
+            if (sel && typeof sel.GetWidth === 'function' && typeof sel.GetHeight === 'function') {
+              var w = sel.GetWidth();
+              var h = sel.GetHeight();
+              if (w && h) {
+                var widthRange = Math.floor(w / 50) * 50; // 按50像素区间
+                var heightRange = Math.floor(h / 50) * 50;
+                contentBuilder.push(widthRange + 'x' + heightRange);
+              }
+            }
+
+            if (contentBuilder.length > 0) {
+              var content = contentBuilder.join('|');
+              return simpleHashUpsert(content);
+            }
+
+            return null;
+          } catch (e) {
+            return null;
+          }
+        }
+
+        // 简单哈希函数
+        function simpleHashUpsert(str) {
+          var hash = 0;
+          if (str.length === 0) return hash.toString(36);
+          for (var i = 0; i < str.length; i++) {
+            var char = str.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash; // 转换为32位整数
+          }
+          return Math.abs(hash).toString(36);
+        }
       }
 
       var doc=getDoc();
@@ -1184,131 +1265,13 @@ import { logger } from '../core/logger.js';
     });
   }
 
-  // 共享的图表指纹生成函数（严格模式 - 无备用方案）
+  // 共享的图表指纹生成函数（增强版 - 不依赖位置索引）
   function createBuildChartFingerprintFunction() {
     return function buildChartFingerprint(sel, doc) {
       var parts = [];
       console.log('🔍 开始生成指纹，图表对象:', sel);
 
-      // 1) 精确位置索引（必须找到，否则报错）
-      var exactIndex = -1;
-      var all = null;
-
-      try {
-        all = doc.GetAllDrawingObjects ? doc.GetAllDrawingObjects() : null;
-        console.log('📊 文档中图表总数:', all ? all.length : 0);
-
-        if (!all || all.length === 0) {
-          throw new Error('无法获取文档中的绘图对象列表');
-        }
-
-        // 先尝试严格匹配
-        for (var i = 0; i < all.length; i++) {
-          if (all[i] === sel) {
-            exactIndex = i;
-            console.log('✅ 找到精确索引(严格匹配):', exactIndex);
-            break;
-          }
-        }
-
-        // 如果严格匹配失败，尝试ID匹配
-        if (exactIndex < 0) {
-          console.log('⚠️ 严格匹配失败，尝试ID匹配...');
-          var selId = null;
-          try {
-            if (sel && typeof sel.GetId === 'function') {
-              selId = sel.GetId();
-              console.log('🔍 当前图表ID:', selId);
-            }
-          } catch(e) {}
-
-          if (selId) {
-            for (var j = 0; j < all.length; j++) {
-              try {
-                if (all[j] && typeof all[j].GetId === 'function') {
-                  var allId = all[j].GetId();
-                  if (allId === selId) {
-                    exactIndex = j;
-                    console.log('✅ 找到精确索引(ID匹配):', exactIndex);
-                    break;
-                  }
-                }
-              } catch(e) {}
-            }
-          }
-        }
-
-        // 如果ID匹配也失败，尝试属性匹配
-        if (exactIndex < 0) {
-          console.log('⚠️ ID匹配失败，尝试属性匹配...');
-          for (var k = 0; k < all.length; k++) {
-            try {
-              // 比较多个属性来判断是否是同一个对象
-              var match = true;
-
-              // 比较类型
-              if (sel && typeof sel.GetClassType === 'function' &&
-                  all[k] && typeof all[k].GetClassType === 'function') {
-                if (sel.GetClassType() !== all[k].GetClassType()) {
-                  match = false;
-                }
-              }
-
-              // 比较尺寸
-              if (match && sel && typeof sel.GetWidth === 'function' &&
-                  all[k] && typeof all[k].GetWidth === 'function') {
-                var selW = sel.GetWidth();
-                var allW = all[k].GetWidth();
-                if (Math.abs(selW - allW) > 1) { // 允许1像素误差
-                  match = false;
-                }
-              }
-
-              if (match && sel && typeof sel.GetHeight === 'function' &&
-                  all[k] && typeof all[k].GetHeight === 'function') {
-                var selH = sel.GetHeight();
-                var allH = all[k].GetHeight();
-                if (Math.abs(selH - allH) > 1) { // 允许1像素误差
-                  match = false;
-                }
-              }
-
-              if (match) {
-                exactIndex = k;
-                console.log('✅ 找到精确索引(属性匹配):', exactIndex);
-                break;
-              }
-            } catch(e) {}
-          }
-        }
-
-        if (exactIndex < 0) {
-          throw new Error('无法在文档绘图对象列表中找到当前图表的索引位置');
-        }
-
-      } catch(e) {
-        console.error('❌ 获取图表索引失败:', e.message);
-        throw new Error('图表索引获取失败: ' + e.message);
-      }
-
-      // 必须的索引部分
-      parts.push('idx:' + exactIndex);
-      console.log('✅ 添加索引部分:', 'idx:' + exactIndex);
-
-      // 2) 内部ID（可选，增强唯一性）
-      try {
-        if (sel && typeof sel.GetId === 'function') {
-          var stableId = sel.GetId();
-          if (stableId) {
-            parts.push('id:' + stableId);
-            console.log('✅ 添加内部ID:', stableId);
-          }
-        }
-      } catch(e){
-        console.log('⚠️ 获取内部ID失败，继续执行:', e.message);
-      }
-
-      // 3) 图表类型（可选）
+      // 1) 图表类型（最重要的稳定标识）
       try {
         var type = getChartType(sel);
         if (type && type !== 'error') {
@@ -1319,7 +1282,7 @@ import { logger } from '../core/logger.js';
         console.log('⚠️ 获取图表类型失败，继续执行:', e.message);
       }
 
-      // 4) 尺寸信息（可选）
+      // 2) 尺寸信息（相对稳定的物理特征）
       try {
         if (sel && typeof sel.GetWidth === 'function' && typeof sel.GetHeight === 'function') {
           var w = sel.GetWidth();
@@ -1334,7 +1297,126 @@ import { logger } from '../core/logger.js';
         console.log('⚠️ 获取尺寸失败，继续执行:', e.message);
       }
 
-      // 必须至少有索引，如果没有就报错
+      // 3) 图表内容哈希（如果可以获取到图表数据）
+      try {
+        var contentHash = generateChartContentHash(sel);
+        if (contentHash) {
+          parts.push('content:' + contentHash);
+          console.log('✅ 添加内容哈希:', contentHash);
+        }
+      } catch(e) {
+        console.log('⚠️ 无法生成内容哈希:', e.message);
+      }
+
+      // 4) 只有在必要时才添加位置信息（作为辅助区分）
+      if (parts.length < 2) {
+        try {
+          var exactIndex = -1;
+          var all = doc.GetAllDrawingObjects ? doc.GetAllDrawingObjects() : null;
+          console.log('📊 文档中图表总数:', all ? all.length : 0);
+
+          if (all && all.length > 0) {
+            // 先尝试严格匹配
+            for (var i = 0; i < all.length; i++) {
+              if (all[i] === sel) {
+                exactIndex = i;
+                console.log('✅ 找到精确索引(严格匹配):', exactIndex);
+                break;
+              }
+            }
+
+            // 如果严格匹配失败，尝试ID匹配
+            if (exactIndex < 0) {
+              console.log('⚠️ 严格匹配失败，尝试ID匹配...');
+              var selId = null;
+              try {
+                if (sel && typeof sel.GetId === 'function') {
+                  selId = sel.GetId();
+                  console.log('🔍 当前图表ID:', selId);
+                }
+              } catch(e) {}
+
+              if (selId) {
+                for (var j = 0; j < all.length; j++) {
+                  try {
+                    if (all[j] && typeof all[j].GetId === 'function') {
+                      var allId = all[j].GetId();
+                      if (allId === selId) {
+                        exactIndex = j;
+                        console.log('✅ 找到精确索引(ID匹配):', exactIndex);
+                        break;
+                      }
+                    }
+                  } catch(e) {}
+                }
+              }
+            }
+
+            // 如果ID匹配也失败，尝试属性匹配
+            if (exactIndex < 0) {
+              console.log('⚠️ ID匹配失败，尝试属性匹配...');
+              for (var k = 0; k < all.length; k++) {
+                try {
+                  // 比较多个属性来判断是否是同一个对象
+                  var match = true;
+
+                  // 比较类型
+                  if (sel && typeof sel.GetClassType === 'function' &&
+                      all[k] && typeof all[k].GetClassType === 'function') {
+                    if (sel.GetClassType() !== all[k].GetClassType()) {
+                      match = false;
+                    }
+                  }
+
+                  // 比较尺寸
+                  if (match && sel && typeof sel.GetWidth === 'function' &&
+                      all[k] && typeof all[k].GetWidth === 'function') {
+                    var selW = sel.GetWidth();
+                    var allW = all[k].GetWidth();
+                    if (Math.abs(selW - allW) > 1) { // 允许1像素误差
+                      match = false;
+                    }
+                  }
+
+                  if (match && sel && typeof sel.GetHeight === 'function' &&
+                      all[k] && typeof all[k].GetHeight === 'function') {
+                    var selH = sel.GetHeight();
+                    var allH = all[k].GetHeight();
+                    if (Math.abs(selH - allH) > 1) { // 允许1像素误差
+                      match = false;
+                    }
+                  }
+
+                  if (match) {
+                    exactIndex = k;
+                    console.log('✅ 找到精确索引(属性匹配):', exactIndex);
+                    break;
+                  }
+                } catch(e) {}
+              }
+            }
+
+            if (exactIndex >= 0) {
+              parts.push('idx:' + exactIndex);
+              console.log('⚠️ 添加位置索引作为辅助: idx:' + exactIndex);
+            }
+          }
+        } catch(e) {
+          console.log('⚠️ 获取位置索引失败:', e.message);
+        }
+      }
+
+      // 5) 文档上下文（总图表数，用于验证）
+      try {
+        var all = doc.GetAllDrawingObjects ? doc.GetAllDrawingObjects() : null;
+        var totalCharts = all ? all.length : 0;
+        parts.push('ctx:' + totalCharts);
+        console.log('✅ 添加文档上下文: ctx:' + totalCharts);
+      } catch(e) {
+        console.log('⚠️ 获取文档上下文失败:', e.message);
+      }
+
+      // 必须至少有图表类型或位置索引
       if (parts.length === 0) {
         throw new Error('无法生成任何有效的指纹部分');
       }
@@ -1342,19 +1424,52 @@ import { logger } from '../core/logger.js';
       var fingerprint = parts.join('|');
       console.log('🔖 最终生成指纹:', fingerprint);
       return fingerprint;
-    };
 
-    // 简单哈希函数（仅用于辅助功能）
-    function simpleHash(str) {
-      var hash = 0;
-      if (str.length === 0) return hash.toString(36);
-      for (var i = 0; i < str.length; i++) {
-        var char = str.charCodeAt(i);
-        hash = ((hash << 5) - hash) + char;
-        hash = hash & hash; // 转换为32位整数
+      // 生成图表内容哈希（基于图表的内在特征）
+      function generateChartContentHash(sel) {
+        try {
+          var contentBuilder = [];
+
+          // 添加图表类型
+          var type = getChartType(sel);
+          if (type) {
+            contentBuilder.push(type);
+          }
+
+          // 添加尺寸（量化为区间，增加稳定性）
+          if (sel && typeof sel.GetWidth === 'function' && typeof sel.GetHeight === 'function') {
+            var w = sel.GetWidth();
+            var h = sel.GetHeight();
+            if (w && h) {
+              var widthRange = Math.floor(w / 50) * 50; // 按50像素区间
+              var heightRange = Math.floor(h / 50) * 50;
+              contentBuilder.push(widthRange + 'x' + heightRange);
+            }
+          }
+
+          if (contentBuilder.length > 0) {
+            var content = contentBuilder.join('|');
+            return simpleHash(content);
+          }
+
+          return null;
+        } catch (e) {
+          return null;
+        }
       }
-      return Math.abs(hash).toString(36);
-    }
+
+      // 简单哈希函数
+      function simpleHash(str) {
+        var hash = 0;
+        if (str.length === 0) return hash.toString(36);
+        for (var i = 0; i < str.length; i++) {
+          var char = str.charCodeAt(i);
+          hash = ((hash << 5) - hash) + char;
+          hash = hash & hash; // 转换为32位整数
+        }
+        return Math.abs(hash).toString(36);
+      }
+    };
 
     // 获取图表类型
     function getChartType(sel) {
