@@ -489,8 +489,6 @@ import { logger } from '../core/logger.js';
             try {
               var all = doc.GetAllDrawingObjects ? doc.GetAllDrawingObjects() : null;
               var totalCharts = all ? all.length : 0;
-              parts.push('ctx:' + totalCharts);
-              console.log('✅ 添加文档上下文: ctx:' + totalCharts);
             } catch(e) {
               console.log('⚠️ 获取文档上下文失败:', e.message);
             }
@@ -1112,8 +1110,6 @@ import { logger } from '../core/logger.js';
         try {
           var all = doc.GetAllDrawingObjects ? doc.GetAllDrawingObjects() : null;
           var totalCharts = all ? all.length : 0;
-          parts.push('ctx:' + totalCharts);
-          console.log('✅ 添加文档上下文: ctx:' + totalCharts);
         } catch(e) {
           console.log('⚠️ 获取文档上下文失败:', e.message);
         }
@@ -1410,8 +1406,6 @@ import { logger } from '../core/logger.js';
       try {
         var all = doc.GetAllDrawingObjects ? doc.GetAllDrawingObjects() : null;
         var totalCharts = all ? all.length : 0;
-        parts.push('ctx:' + totalCharts);
-        console.log('✅ 添加文档上下文: ctx:' + totalCharts);
       } catch(e) {
         console.log('⚠️ 获取文档上下文失败:', e.message);
       }
