@@ -312,6 +312,21 @@ export class CommandBus {
         }
       }
 
+      case COMMANDS.BIND_ROW_DATA: {
+        const rowBindResult = await this.selectionBinding.bindRowData(data);
+        if (rowBindResult && rowBindResult.success) {
+          try {
+            const action = rowBindResult.data?.action === 'updated' ? 'rowBindingUpdated' : 'rowBindingCreated';
+            this.host.sendInfo(action, rowBindResult.data);
+          } catch (notifyErr) {
+            console.error('发送行绑定事件失败:', notifyErr);
+          }
+          return { ok: true, data: rowBindResult };
+        } else {
+          return { ok: false, error: rowBindResult?.error || 'Row data binding failed' };
+        }
+      }
+
       case COMMANDS.GET_CHART_TYPE: {
         const chartTypeResult = await this.chartBinding.getChartType();
         if (chartTypeResult && chartTypeResult.success) {

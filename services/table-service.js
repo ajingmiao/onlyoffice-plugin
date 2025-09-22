@@ -424,167 +424,426 @@ export class TableService {
         return this.insertTable(options);
     }
 
-    // 处理表格点击事件（直接检测表格，不依赖Content Control）
+    // 处理表格点击事件：精确定位当前单元格并返回稳定标识
     async handleTableClick() {
         return new Promise((resolve) => {
             this.editor.runInDoc(function () {
-                var doc = Api.GetDocument();
-                var range = doc.GetRangeBySelect();
-
-                console.log('=== 表格点击检测（直接检测方式）===');
-                console.log('当前选区:', range);
-
-                if (!range) {
-                    console.log('未检测到选区');
-                    resolve({ success: false, error: 'No selection found' });
-                    return;
+                function safeCall(target, methodName, args) {
+                    if (!target || typeof target[methodName] !== 'function') {
+                        return { ok: false };
+                    }
+                    try {
+                        return { ok: true, value: target[methodName].apply(target, args || []) };
+                    } catch (err) {
+                        console.log('[TableService] 调用', methodName, '出错:', err);
+                        return { ok: false, error: err };
+                    }
                 }
 
-                // 检测文档中的所有表格
-                var foundTables = [];
-
-                for (var i = 0; i < 50; i++) {
+                function parsePrefixedJsonTag(tag, prefix) {
+                    if (typeof tag !== 'string' || tag.indexOf(prefix) !== 0) {
+                        return null;
+                    }
                     try {
-                        var element = doc.GetElement(i);
-                        if (!element) {
-                            break;
-                        }
+                        return JSON.parse(tag.slice(prefix.length));
+                    } catch (e) {
+                        console.log('[TableService] 解析标签失败:', tag, e);
+                        return null;
+                    }
+                }
 
-                        var elementType = 'unknown';
-                        if (typeof element.GetClassType === 'function') {
-                            elementType = element.GetClassType();
-                        }
+                function generateUid(prefix) {
+                    return (prefix || 'uid') + '-' + (new Date().getTime().toString(36)) + '-' + Math.floor(Math.random() * 1e8).toString(36);
+                }
 
+                function findCellFromRange(range) {
+                    if (!range) {
+                        return null;
+                    }
 
-                        if (elementType === 'CTable') {
+                    var directCell = safeCall(range, 'GetParentTableCell');
+                    if (directCell.ok && directCell.value) {
+                        return directCell.value;
+                    }
 
-                            // 提取表格数据
-                            var tableData = {
-                                index: i,
-                                rows: 0,
-                                columns: 0,
-                                content: []
-                            };
+                    var paragraph = null;
+                    var paraResult = safeCall(range, 'GetParagraph');
+                    if (paraResult.ok) {
+                        paragraph = paraResult.value;
+                    }
 
-                            if (typeof element.GetRowsCount === 'function') {
-                                tableData.rows = element.GetRowsCount();
-
-                                // 提取表格内容（前5行）
-                                for (var r = 0; r < Math.min(tableData.rows, 5); r++) {
+                    if (!paragraph && typeof range.GetElementsCount === 'function' && typeof range.GetElement === 'function') {
+                        try {
+                            var elemCount = range.GetElementsCount();
+                            for (var i = 0; i < elemCount; i++) {
+                                var elem = range.GetElement(i);
+                                if (!elem) {
+                                    continue;
+                                }
+                                if (typeof elem.GetParentParagraph === 'function') {
                                     try {
-                                        if (typeof element.GetRow === 'function') {
-                                            var row = element.GetRow(r);
-                                            if (row && typeof row.GetCellsCount === 'function') {
-                                                var cellCount = row.GetCellsCount();
-                                                tableData.columns = Math.max(tableData.columns, cellCount);
-
-                                                var rowData = [];
-                                                for (var c = 0; c < Math.min(cellCount, 10); c++) {
-                                                    try {
-                                                        if (typeof row.GetCell === 'function') {
-                                                            var cell = row.GetCell(c);
-                                                            var cellText = '';
-
-                                                            if (cell && typeof cell.GetContent === 'function') {
-                                                                var cellContent = cell.GetContent();
-                                                                if (cellContent && typeof cellContent.GetElementsCount === 'function') {
-                                                                    var elemCount = cellContent.GetElementsCount();
-                                                                    for (var e = 0; e < elemCount; e++) {
-                                                                        var cellElem = cellContent.GetElement(e);
-                                                                        if (cellElem && typeof cellElem.GetText === 'function') {
-                                                                            cellText += cellElem.GetText();
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                            rowData.push(cellText.trim());
-                                                        }
-                                                    } catch (cellError) {
-                                                        console.log(`读取单元格 [${r}][${c}] 出错:`, cellError);
-                                                        rowData.push('ERROR');
-                                                    }
-                                                }
-                                                tableData.content.push(rowData);
-                                            }
+                                        paragraph = elem.GetParentParagraph();
+                                        if (paragraph) {
+                                            break;
                                         }
-                                    } catch (rowError) {
-                                        console.log(`读取表格第 ${r} 行出错:`, rowError);
+                                    } catch (errPara) {
+                                        console.log('[TableService] GetParentParagraph 失败:', errPara);
                                     }
                                 }
                             }
-
-                            foundTables.push({ index: i, table: element, data: tableData });
+                        } catch (errElements) {
+                            console.log('[TableService] 遍历range元素失败:', errElements);
                         }
-                    } catch (elementError) {
-                        console.log(`读取文档元素 ${i} 出错:`, elementError);
                     }
+
+                    if (paragraph && typeof paragraph.GetParentTableCell === 'function') {
+                        try {
+                            var cellFromPara = paragraph.GetParentTableCell();
+                            if (cellFromPara) {
+                                return cellFromPara;
+                            }
+                        } catch (errCell) {
+                            console.log('[TableService] 从段落获取单元格失败:', errCell);
+                        }
+                    }
+
+                    if (typeof range.GetElement === 'function') {
+                        try {
+                            var firstElement = range.GetElement(0);
+                            if (firstElement && typeof firstElement.GetParentTableCell === 'function') {
+                                return firstElement.GetParentTableCell();
+                            }
+                        } catch (errFirstElem) {
+                            console.log('[TableService] 从首元素查找单元格失败:', errFirstElem);
+                        }
+                    }
+
+                    return null;
                 }
 
-
-                if (foundTables.length > 0) {
-                    // 简单策略：返回最后一个表格的信息（假设用户点击的是最近的表格）
-                    var lastTable = foundTables[foundTables.length - 1];
-
-                    // 尝试检测表格的类型（通过分析表格内容）
-                    var detectedType = 'unknown-table';
-                    var metadata = {
-                        detectedAt: new Date().toLocaleString('zh-CN'),
-                        method: 'content-analysis'
+                function ensureTableMeta(table) {
+                    var info = {
+                        table: table,
+                        control: null,
+                        createdControl: false,
+                        controlId: '',
+                        internalId: '',
+                        tag: '',
+                        metaObj: null,
+                        tableUid: '',
+                        descriptionMeta: '',
+                        tableIndex: -1
                     };
 
-                    // 简单的表格类型识别
-                    if (lastTable.data.content && lastTable.data.content.length > 0) {
-                        var firstRow = lastTable.data.content[0];
-                        if (firstRow && firstRow.length > 0) {
-                            var headerText = firstRow.join('|').toLowerCase();
+                    if (!table) {
+                        return info;
+                    }
 
-                            if (headerText.includes('产品') && headerText.includes('月')) {
-                                detectedType = 'sales-report';
-                                metadata.title = '销售报表';
-                                metadata.category = '业务数据';
-                            } else if (headerText.includes('时间') && headerText.includes('周')) {
-                                detectedType = 'schedule';
-                                metadata.title = '时间表';
-                                metadata.category = '日程安排';
-                            } else if (firstRow.length >= 3) {
-                                detectedType = 'data-table';
-                                metadata.title = '数据表格';
-                                metadata.category = '通用表格';
+                    var parentControl = safeCall(table, 'GetParentContentControl');
+                    if (parentControl.ok && parentControl.value) {
+                        info.control = parentControl.value;
+                    }
+
+                    if (!info.control) {
+                        var insertResult = safeCall(table, 'InsertInContentControl', [1]);
+                        if (insertResult.ok && insertResult.value) {
+                            info.control = insertResult.value;
+                            info.createdControl = true;
+                        }
+                    }
+
+                    if (info.control) {
+                        var controlIdRes = safeCall(info.control, 'GetId');
+                        if (controlIdRes.ok && controlIdRes.value) {
+                            info.controlId = controlIdRes.value;
+                        }
+
+                        var internalIdRes = safeCall(info.control, 'GetInternalId');
+                        if (internalIdRes.ok && internalIdRes.value) {
+                            info.internalId = internalIdRes.value;
+                        }
+
+                        var tagRes = safeCall(info.control, 'GetTag');
+                        if (tagRes.ok && typeof tagRes.value === 'string') {
+                            info.tag = tagRes.value;
+                            var parsed = parsePrefixedJsonTag(info.tag, 'table-meta:');
+                            if (parsed && parsed.tableUid) {
+                                info.tableUid = parsed.tableUid;
+                            }
+                            if (parsed) {
+                                info.metaObj = parsed;
+                            }
+                        }
+
+                        if (!info.tableUid) {
+                            var newMeta = {
+                                tableUid: generateUid('table'),
+                                createdAt: new Date().toISOString()
+                            };
+                            info.tableUid = newMeta.tableUid;
+                            info.tag = 'table-meta:' + JSON.stringify(newMeta);
+                            info.metaObj = newMeta;
+                            if (typeof info.control.SetTag === 'function') {
+                                try {
+                                    info.control.SetTag(info.tag);
+                                } catch (setTagErr) {
+                                    console.log('[TableService] 设置表格控件Tag失败:', setTagErr);
+                                }
                             }
                         }
                     }
 
-                    var result = {
-                        success: true,
-                        message: 'Table detected in document',
-                        data: {
-                            clickType: 'table',
-                            tableIndex: lastTable.index,
-                            tableData: lastTable.data,
-                            detectedType: detectedType,
-                            metadata: metadata,
-                            detectionMethod: 'direct-table-scan',
-                            tablesFound: foundTables.length,
-                            timestamp: new Date().toLocaleString('zh-CN')
+                    if (!info.tableUid) {
+                        var descRes = safeCall(table, 'GetTableDescription');
+                        if (descRes.ok && typeof descRes.value === 'string') {
+                            info.descriptionMeta = descRes.value;
+                            var parsedDesc = parsePrefixedJsonTag(descRes.value, 'table-meta:');
+                            if (parsedDesc && parsedDesc.tableUid) {
+                                info.tableUid = parsedDesc.tableUid;
+                            }
+                            if (parsedDesc) {
+                                info.metaObj = parsedDesc;
+                            }
                         }
-                    };
 
-                    console.log('✅ 表格检测成功:', result);
-                    resolve(result);
-                    return;
-                } else {
-                    console.log('❌ 未发现任何表格');
-                    resolve({
-                        success: false,
-                        error: 'No tables found in document',
-                        data: {
-                            clickType: 'document',
-                            elementsScanned: 50,
-                            hasRange: !!range,
-                            timestamp: new Date().toLocaleString('zh-CN')
+                        if (!info.tableUid) {
+                            var descMeta = 'table-meta:' + JSON.stringify({ tableUid: generateUid('table'), createdAt: new Date().toISOString(), source: 'table-description' });
+                            info.descriptionMeta = descMeta;
+                            var parsedMeta = parsePrefixedJsonTag(descMeta, 'table-meta:');
+                            if (parsedMeta && parsedMeta.tableUid) {
+                                info.tableUid = parsedMeta.tableUid;
+                                info.metaObj = parsedMeta;
+                            }
+                            if (typeof table.SetTableDescription === 'function') {
+                                try {
+                                    table.SetTableDescription(descMeta);
+                                } catch (setDescErr) {
+                                    console.log('[TableService] 设置表格描述失败:', setDescErr);
+                                }
+                            }
                         }
-                    });
+                    }
+
+                    if (!info.tag && info.descriptionMeta) {
+                        info.tag = info.descriptionMeta;
+                    }
+
+                    if (!info.tableUid) {
+                        info.tableUid = generateUid('table');
+                    }
+
+                    if (!info.metaObj) {
+                        info.metaObj = parsePrefixedJsonTag(info.tag, 'table-meta:');
+                    }
+
+                    return info;
                 }
+
+                function computeTableIndex(doc, table) {
+                    if (!doc || !table || typeof doc.GetElementsCount !== 'function' || typeof doc.GetElement !== 'function') {
+                        return -1;
+                    }
+                    try {
+                        var total = doc.GetElementsCount();
+                        for (var idx = 0; idx < total; idx++) {
+                            var element = doc.GetElement(idx);
+                            if (element === table) {
+                                return idx;
+                            }
+                        }
+                    } catch (err) {
+                        console.log('[TableService] 获取表格索引失败:', err);
+                    }
+                    return -1;
+                }
+
+                function findRowRange(cell) {
+                    if (!cell) {
+                        return { row: null, range: null };
+                    }
+
+                    var parentRowRes = safeCall(cell, 'GetParentRow');
+                    var row = parentRowRes.ok ? parentRowRes.value : null;
+                    var rowRange = null;
+
+                    if (row && typeof row.GetRange === 'function') {
+                        try {
+                            rowRange = row.GetRange();
+                        } catch (errRowRange) {
+                            console.log('[TableService] 获取行Range失败:', errRowRange);
+                        }
+                    }
+
+                    if (!rowRange && row && typeof row.GetCell === 'function') {
+                        try {
+                            var firstCell = row.GetCell(0);
+                            if (firstCell && typeof firstCell.GetRange === 'function') {
+                                rowRange = firstCell.GetRange();
+                            }
+                        } catch (errFirstCellRange) {
+                            console.log('[TableService] 从首个单元格获取行Range失败:', errFirstCellRange);
+                        }
+                    }
+
+                    return { row: row, range: rowRange };
+                }
+
+                function findExistingRowControl(doc, rowRange, tableInfo, rowIndex) {
+                    if (!doc || typeof doc.GetAllContentControls !== 'function') {
+                        return null;
+                    }
+
+                    var controls = [];
+                    try {
+                        controls = doc.GetAllContentControls();
+                    } catch (errControls) {
+                        console.log('[TableService] 获取所有内容控件失败:', errControls);
+                        return null;
+                    }
+
+                    for (var i = 0; i < controls.length; i++) {
+                        var control = controls[i];
+                        if (!control) {
+                            continue;
+                        }
+
+                        var tag = '';
+                        var alias = '';
+                        var controlType = null;
+                        var internalId = '';
+
+                        var tagRes = safeCall(control, 'GetTag');
+                        if (tagRes.ok && typeof tagRes.value === 'string') {
+                            tag = tagRes.value;
+                        }
+
+                        var aliasRes = safeCall(control, 'GetAlias');
+                        if (aliasRes.ok && typeof aliasRes.value === 'string') {
+                            alias = aliasRes.value;
+                        }
+
+                        var typeRes = safeCall(control, 'GetType');
+                        if (typeRes.ok) {
+                            controlType = typeRes.value;
+                        }
+
+                        var internalIdRes = safeCall(control, 'GetInternalId');
+                        if (internalIdRes.ok && internalIdRes.value) {
+                            internalId = internalIdRes.value;
+                        }
+
+                        var parsedRowMeta = parsePrefixedJsonTag(tag, 'row-meta:');
+                        var matchesByTag = false;
+                        if (parsedRowMeta) {
+                            if (tableInfo && tableInfo.tableUid && parsedRowMeta.tableUid === tableInfo.tableUid) {
+                                if (typeof parsedRowMeta.rowIndex === 'number') {
+                                    matchesByTag = parsedRowMeta.rowIndex === rowIndex;
+                                } else {
+                                    matchesByTag = true;
+                                }
+                            } else if (tableInfo && tableInfo.internalId && parsedRowMeta.tableInternalId === tableInfo.internalId) {
+                                matchesByTag = typeof parsedRowMeta.rowIndex === 'number' ? parsedRowMeta.rowIndex === rowIndex : true;
+                            }
+                        }
+
+                        var matchesByRange = false;
+                        if (!matchesByTag && rowRange && typeof control.IsRangeIn === 'function') {
+                            try {
+                                matchesByRange = control.IsRangeIn(rowRange);
+                            } catch (errIsRange) {
+                                console.log('[TableService] 判断控件是否在行范围内失败:', errIsRange);
+                            }
+                        }
+
+                        if (matchesByTag || matchesByRange) {
+                            return {
+                                control: control,
+                                tag: tag,
+                                alias: alias,
+                                type: controlType,
+                                internalId: internalId,
+                                meta: parsedRowMeta || null
+                            };
+                        }
+                    }
+
+                    return null;
+                }
+
+                var doc = null;
+                try {
+                    if (typeof Api !== 'undefined' && typeof Api.GetDocument === 'function') {
+                        doc = Api.GetDocument();
+                    }
+                } catch (docErr) {
+                    console.log('[TableService] 获取文档对象失败:', docErr);
+                }
+
+                if (!doc) {
+                    return { success: false, error: 'Document object unavailable' };
+                }
+
+                var range = null;
+                if (typeof doc.GetRangeBySelect === 'function') {
+                    try {
+                        range = doc.GetRangeBySelect();
+                    } catch (rangeErr) {
+                        console.log('[TableService] 获取选区失败:', rangeErr);
+                    }
+                }
+
+                if (!range) {
+                    return { success: false, error: 'No selection found' };
+                }
+
+                var cell = findCellFromRange(range);
+                if (!cell) {
+                    return { success: false, error: 'Selection is not inside a table cell' };
+                }
+
+                var tableResult = safeCall(cell, 'GetParentTable');
+                var table = tableResult.ok ? tableResult.value : null;
+                if (!table) {
+                    return { success: false, error: 'Parent table not found' };
+                }
+
+                var rowIndexRes = safeCall(cell, 'GetRowIndex');
+                var columnIndexRes = safeCall(cell, 'GetIndex');
+                var rowIndex = rowIndexRes.ok ? rowIndexRes.value : null;
+                var columnIndex = columnIndexRes.ok ? columnIndexRes.value : null;
+
+                var tableMeta = ensureTableMeta(table);
+                tableMeta.tableIndex = computeTableIndex(doc, table);
+
+                var rowContext = findRowRange(cell);
+                var existingRowControl = findExistingRowControl(doc, rowContext.range, tableMeta, rowIndex);
+
+                var rowMeta = existingRowControl && existingRowControl.meta ? existingRowControl.meta : null;
+                var resultData = {
+                    clickType: 'table',
+                    tableIndex: tableMeta.tableIndex,
+                    tableUid: tableMeta.tableUid,
+                    tableControlId: tableMeta.controlId,
+                    tableInternalId: tableMeta.internalId,
+                    tableTag: tableMeta.tag,
+                    tableDescriptionTag: tableMeta.descriptionMeta,
+                    tableMeta: tableMeta.metaObj || null,
+                    tableControlCreated: tableMeta.createdControl,
+                    rowIndex: rowIndex,
+                    columnIndex: columnIndex,
+                    rowControlId: existingRowControl ? existingRowControl.internalId : '',
+                    rowTag: existingRowControl ? existingRowControl.tag : '',
+                    rowAlias: existingRowControl ? existingRowControl.alias : '',
+                    rowMeta: rowMeta,
+                    hasRowControl: !!existingRowControl,
+                    timestamp: new Date().toISOString()
+                };
+
+                return {
+                    success: true,
+                    message: 'Table cell detected',
+                    data: resultData
+                };
 
             }, { async: false, cb: (res) => resolve(res) });
         });

@@ -881,7 +881,19 @@ export class SelectionBindingService {
             metadata: options.metadata || {}
         };
 
-        return this.editor.runInDoc(function () {
+        const updateResult = await this.editor.runInDoc(function () {
+            function parsePrefixedJsonTag(tag, prefix) {
+                if (typeof tag !== 'string' || tag.indexOf(prefix) !== 0) {
+                    return null;
+                }
+                try {
+                    return JSON.parse(tag.slice(prefix.length));
+                } catch (err) {
+                    console.log('[SelectionBinding] 解析标签失败:', tag, err);
+                    return null;
+                }
+            }
+
             var doc = Api.GetDocument();
             var scope = Asc.scope;
 
@@ -999,6 +1011,1091 @@ export class SelectionBindingService {
         });
     }
 
+    // 为当前光标所在行绑定隐藏数据
+    async bindRowData(bindingPayload) {
+        const payload = bindingPayload || {};
+
+        window.Asc = window.Asc || {};
+        window.Asc.scope = Object.assign({}, window.Asc.scope || {}, {
+            rowBindingPayload: {
+                data: payload.data || {},
+                extraMeta: payload.extraMeta || {},
+                alias: payload.alias || '',
+                lock: (payload.lock && typeof payload.lock === 'object') ? payload.lock : null,
+                requestedRowUid: payload.rowUid || '',
+                preserveExisting: !!payload.preserveExisting
+            }
+        });
+
+        const initialResult = await new Promise((resolve) => {
+            this.editor.runInDoc(function () {
+                function safeCall(target, methodName, args) {
+                    if (!target || typeof target[methodName] !== 'function') {
+                        return { ok: false };
+                    }
+                    try {
+                        return { ok: true, value: target[methodName].apply(target, args || []) };
+                    } catch (err) {
+                        console.log('[SelectionBinding] 调用', methodName, '失败:', err);
+                        return { ok: false, error: err };
+                    }
+                }
+
+                function parsePrefixedJsonTag(tag, prefix) {
+                    if (typeof tag !== 'string' || tag.indexOf(prefix) !== 0) {
+                        return null;
+                    }
+                    try {
+                        return JSON.parse(tag.slice(prefix.length));
+                    } catch (e) {
+                        console.log('[SelectionBinding] 解析标签失败:', tag, e);
+                        return null;
+                    }
+                }
+
+                function generateUid(prefix) {
+                    return (prefix || 'uid') + '-' + (new Date().getTime().toString(36)) + '-' + Math.floor(Math.random() * 1e8).toString(36);
+                }
+
+                function findCellFromRange(range) {
+                    if (!range) {
+                        return null;
+                    }
+
+                    var directCell = safeCall(range, 'GetParentTableCell');
+                    if (directCell.ok && directCell.value) {
+                        return directCell.value;
+                    }
+
+                    var paragraph = null;
+                    var paraRes = safeCall(range, 'GetParagraph');
+                    if (paraRes.ok) {
+                        paragraph = paraRes.value;
+                    }
+
+                    if (!paragraph && typeof range.GetElementsCount === 'function' && typeof range.GetElement === 'function') {
+                        try {
+                            var elementsCount = range.GetElementsCount();
+                            for (var i = 0; i < elementsCount; i++) {
+                                var elem = range.GetElement(i);
+                                if (!elem) {
+                                    continue;
+                                }
+                                if (typeof elem.GetParentParagraph === 'function') {
+                                    try {
+                                        paragraph = elem.GetParentParagraph();
+                                        if (paragraph) {
+                                            break;
+                                        }
+                                    } catch (errPara) {
+                                        console.log('[SelectionBinding] 获取父段落失败:', errPara);
+                                    }
+                                }
+                            }
+                        } catch (errElements) {
+                            console.log('[SelectionBinding] 遍历选区元素失败:', errElements);
+                        }
+                    }
+
+                    if (paragraph && typeof paragraph.GetParentTableCell === 'function') {
+                        try {
+                            var cellFromParagraph = paragraph.GetParentTableCell();
+                            if (cellFromParagraph) {
+                                return cellFromParagraph;
+                            }
+                        } catch (errCell) {
+                            console.log('[SelectionBinding] 从段落取单元格失败:', errCell);
+                        }
+                    }
+
+                    if (typeof range.GetElement === 'function') {
+                        try {
+                            var firstElement = range.GetElement(0);
+                            if (firstElement && typeof firstElement.GetParentTableCell === 'function') {
+                                return firstElement.GetParentTableCell();
+                            }
+                        } catch (errFirstElement) {
+                            console.log('[SelectionBinding] 从首元素获取单元格失败:', errFirstElement);
+                        }
+                    }
+
+                    return null;
+                }
+
+                function ensureTableMeta(table) {
+                    var info = {
+                        table: table,
+                        control: null,
+                        createdControl: false,
+                        controlId: '',
+                        internalId: '',
+                        tag: '',
+                        metaObj: null,
+                        tableUid: '',
+                        descriptionMeta: ''
+                    };
+
+                    if (!table) {
+                        return info;
+                    }
+
+                    var parentControl = safeCall(table, 'GetParentContentControl');
+                    if (parentControl.ok && parentControl.value) {
+                        info.control = parentControl.value;
+                    }
+
+                    if (!info.control) {
+                        var insertRes = safeCall(table, 'InsertInContentControl', [1]);
+                        if (insertRes.ok && insertRes.value) {
+                            info.control = insertRes.value;
+                            info.createdControl = true;
+                        }
+                    }
+
+                    if (info.control) {
+                        var controlIdRes = safeCall(info.control, 'GetId');
+                        if (controlIdRes.ok && controlIdRes.value) {
+                            info.controlId = controlIdRes.value;
+                        }
+
+                        var internalIdRes = safeCall(info.control, 'GetInternalId');
+                        if (internalIdRes.ok && internalIdRes.value) {
+                            info.internalId = internalIdRes.value;
+                        }
+
+                        var tagRes = safeCall(info.control, 'GetTag');
+                        if (tagRes.ok && typeof tagRes.value === 'string') {
+                            info.tag = tagRes.value;
+                            var parsed = parsePrefixedJsonTag(info.tag, 'table-meta:');
+                            if (parsed && parsed.tableUid) {
+                                info.tableUid = parsed.tableUid;
+                            }
+                            if (parsed) {
+                                info.metaObj = parsed;
+                            }
+                        }
+
+                        if (!info.tableUid) {
+                            var newMeta = {
+                                tableUid: generateUid('table'),
+                                createdAt: new Date().toISOString()
+                            };
+                            info.tableUid = newMeta.tableUid;
+                            info.tag = 'table-meta:' + JSON.stringify(newMeta);
+                            info.metaObj = newMeta;
+                            if (typeof info.control.SetTag === 'function') {
+                                try {
+                                    info.control.SetTag(info.tag);
+                                } catch (setTagErr) {
+                                    console.log('[SelectionBinding] 设置表格控件标签失败:', setTagErr);
+                                }
+                            }
+                        }
+                    }
+
+                    if (!info.tableUid) {
+                        var descRes = safeCall(table, 'GetTableDescription');
+                        if (descRes.ok && typeof descRes.value === 'string') {
+                            info.descriptionMeta = descRes.value;
+                            var parsedDesc = parsePrefixedJsonTag(descRes.value, 'table-meta:');
+                            if (parsedDesc && parsedDesc.tableUid) {
+                                info.tableUid = parsedDesc.tableUid;
+                            }
+                            if (parsedDesc) {
+                                info.metaObj = parsedDesc;
+                            }
+                        }
+
+                        if (!info.tableUid) {
+                            var descMeta = 'table-meta:' + JSON.stringify({ tableUid: generateUid('table'), createdAt: new Date().toISOString(), source: 'table-description' });
+                            info.descriptionMeta = descMeta;
+                            var parsedMeta = parsePrefixedJsonTag(descMeta, 'table-meta:');
+                            if (parsedMeta && parsedMeta.tableUid) {
+                                info.tableUid = parsedMeta.tableUid;
+                            }
+                            if (parsedMeta) {
+                                info.metaObj = parsedMeta;
+                            }
+                            if (typeof table.SetTableDescription === 'function') {
+                                try {
+                                    table.SetTableDescription(descMeta);
+                                } catch (setDescErr) {
+                                    console.log('[SelectionBinding] 设置表格描述失败:', setDescErr);
+                                }
+                            }
+                        }
+                    }
+
+                    if (!info.tag && info.descriptionMeta) {
+                        info.tag = info.descriptionMeta;
+                    }
+
+                    if (!info.tableUid) {
+                        info.tableUid = generateUid('table');
+                    }
+
+                    if (!info.metaObj) {
+                        info.metaObj = parsePrefixedJsonTag(info.tag, 'table-meta:');
+                    }
+
+                    return info;
+                }
+
+                function computeTableIndex(doc, table) {
+                    if (!doc || !table || typeof doc.GetElementsCount !== 'function' || typeof doc.GetElement !== 'function') {
+                        return -1;
+                    }
+                    try {
+                        var total = doc.GetElementsCount();
+                        for (var idx = 0; idx < total; idx++) {
+                            var element = doc.GetElement(idx);
+                            if (element === table) {
+                                return idx;
+                            }
+                        }
+                    } catch (err) {
+                        console.log('[SelectionBinding] 获取表格索引失败:', err);
+                    }
+                    return -1;
+                }
+
+                function findRowRange(cell) {
+                    if (!cell) {
+                        return { row: null, range: null };
+                    }
+
+                    var rowRes = safeCall(cell, 'GetParentRow');
+                    var row = rowRes.ok ? rowRes.value : null;
+                    var rowRange = null;
+
+                    if (row && typeof row.GetRange === 'function') {
+                        try {
+                            rowRange = row.GetRange();
+                        } catch (rowRangeErr) {
+                            console.log('[SelectionBinding] 获取行Range失败:', rowRangeErr);
+                        }
+                    }
+
+                    if (!rowRange && row && typeof row.GetCell === 'function') {
+                        try {
+                            var firstCell = row.GetCell(0);
+                            if (firstCell && typeof firstCell.GetRange === 'function') {
+                                rowRange = firstCell.GetRange();
+                            }
+                        } catch (firstCellErr) {
+                            console.log('[SelectionBinding] 从首个单元格取Range失败:', firstCellErr);
+                        }
+                    }
+
+                    return { row: row, range: rowRange };
+                }
+
+                function findExistingRowControl(doc, rowRange, tableInfo, rowIndex) {
+                    if (!doc || typeof doc.GetAllContentControls !== 'function') {
+                        return null;
+                    }
+
+                    var controls = [];
+                    try {
+                        controls = doc.GetAllContentControls();
+                    } catch (controlsErr) {
+                        console.log('[SelectionBinding] 获取内容控件失败:', controlsErr);
+                        return null;
+                    }
+
+                    for (var i = 0; i < controls.length; i++) {
+                        var control = controls[i];
+                        if (!control) {
+                            continue;
+                        }
+
+                        var tag = '';
+                        var alias = '';
+                        var controlType = null;
+                        var internalId = '';
+
+                        var tagRes = safeCall(control, 'GetTag');
+                        if (tagRes.ok && typeof tagRes.value === 'string') {
+                            tag = tagRes.value;
+                        }
+
+                        var aliasRes = safeCall(control, 'GetAlias');
+                        if (aliasRes.ok && typeof aliasRes.value === 'string') {
+                            alias = aliasRes.value;
+                        }
+
+                        var typeRes = safeCall(control, 'GetType');
+                        if (typeRes.ok) {
+                            controlType = typeRes.value;
+                        }
+
+                        var internalIdRes = safeCall(control, 'GetInternalId');
+                        if (internalIdRes.ok && internalIdRes.value) {
+                            internalId = internalIdRes.value;
+                        }
+
+                        var parsedRowMeta = parsePrefixedJsonTag(tag, 'row-meta:');
+                        var matchesByTag = false;
+                        if (parsedRowMeta) {
+                            if (tableInfo && tableInfo.tableUid && parsedRowMeta.tableUid === tableInfo.tableUid) {
+                                if (typeof parsedRowMeta.rowIndex === 'number') {
+                                    matchesByTag = parsedRowMeta.rowIndex === rowIndex;
+                                } else {
+                                    matchesByTag = true;
+                                }
+                            } else if (tableInfo && tableInfo.internalId && parsedRowMeta.tableInternalId === tableInfo.internalId) {
+                                matchesByTag = typeof parsedRowMeta.rowIndex === 'number' ? parsedRowMeta.rowIndex === rowIndex : true;
+                            }
+                        }
+
+                        var matchesByRange = false;
+                        if (!matchesByTag && rowRange && typeof control.IsRangeIn === 'function') {
+                            try {
+                                matchesByRange = control.IsRangeIn(rowRange);
+                            } catch (isRangeErr) {
+                                console.log('[SelectionBinding] 判断控件是否在行范围失败:', isRangeErr);
+                            }
+                        }
+
+                        if (matchesByTag || matchesByRange) {
+                            return {
+                                control: control,
+                                tag: tag,
+                                alias: alias,
+                                type: controlType,
+                                internalId: internalId,
+                                meta: parsedRowMeta || null
+                            };
+                        }
+                    }
+
+                    return null;
+                }
+
+                var doc = null;
+                try {
+                    if (typeof Api !== 'undefined' && typeof Api.GetDocument === 'function') {
+                        doc = Api.GetDocument();
+                    }
+                } catch (docErr) {
+                    console.log('[SelectionBinding] 获取文档对象失败:', docErr);
+                }
+
+                if (!doc) {
+                    return { success: false, error: 'Document object unavailable' };
+                }
+
+                var payload = (Asc.scope && Asc.scope.rowBindingPayload) ? Asc.scope.rowBindingPayload : {};
+
+                var range = null;
+                if (typeof doc.GetRangeBySelect === 'function') {
+                    try {
+                        range = doc.GetRangeBySelect();
+                    } catch (rangeErr) {
+                        console.log('[SelectionBinding] 获取选区失败:', rangeErr);
+                    }
+                }
+
+                if (!range) {
+                    return { success: false, error: 'No selection found' };
+                }
+
+                var cell = findCellFromRange(range);
+                if (!cell) {
+                    return { success: false, error: 'Selection is not inside a table cell' };
+                }
+
+                var tableRes = safeCall(cell, 'GetParentTable');
+                var table = tableRes.ok ? tableRes.value : null;
+                if (!table) {
+                    return { success: false, error: 'Parent table not found' };
+                }
+
+                var tableMeta = ensureTableMeta(table);
+                tableMeta.tableIndex = computeTableIndex(doc, table);
+
+                var rowIndexRes = safeCall(cell, 'GetRowIndex');
+                var columnIndexRes = safeCall(cell, 'GetIndex');
+                var rowIndex = rowIndexRes.ok ? rowIndexRes.value : null;
+                var columnIndex = columnIndexRes.ok ? columnIndexRes.value : null;
+
+                var rowContext = findRowRange(cell);
+                var existingRowControl = findExistingRowControl(doc, rowContext.range, tableMeta, rowIndex);
+
+                var nowIso = new Date().toISOString();
+                var rowMeta = existingRowControl && existingRowControl.meta ? existingRowControl.meta : null;
+
+                if (!rowMeta) {
+                    rowMeta = {
+                        tableUid: tableMeta.tableUid,
+                        tableInternalId: tableMeta.internalId || '',
+                        rowIndex: rowIndex,
+                        rowUid: payload.requestedRowUid || generateUid('row'),
+                        createdAt: nowIso
+                    };
+                }
+
+                if (!rowMeta.rowUid) {
+                    rowMeta.rowUid = payload.requestedRowUid || generateUid('row');
+                }
+
+                if (!rowMeta.createdAt) {
+                    rowMeta.createdAt = nowIso;
+                }
+
+                rowMeta.updatedAt = nowIso;
+                rowMeta.data = payload.data || {};
+                if (payload.extraMeta && typeof payload.extraMeta === 'object') {
+                    rowMeta.extra = payload.extraMeta;
+                }
+
+                if (!rowMeta.tableUid) {
+                    rowMeta.tableUid = tableMeta.tableUid;
+                }
+                if (!rowMeta.tableInternalId && tableMeta.internalId) {
+                    rowMeta.tableInternalId = tableMeta.internalId;
+                }
+
+                var rowTag = 'row-meta:' + JSON.stringify(rowMeta);
+                var aliasText = payload.alias || ('表格行绑定 - 第' + (typeof rowIndex === 'number' ? (rowIndex + 1) : '?') + '行');
+
+                if (existingRowControl && existingRowControl.control) {
+                    if (!payload.preserveExisting) {
+                        if (typeof existingRowControl.control.SetTag === 'function') {
+                            try {
+                                existingRowControl.control.SetTag(rowTag);
+                            } catch (setTagErr) {
+                                console.log('[SelectionBinding] 更新行标签失败:', setTagErr);
+                            }
+                        }
+                    }
+
+                    if (typeof existingRowControl.control.SetAlias === 'function') {
+                        try {
+                            existingRowControl.control.SetAlias(aliasText);
+                        } catch (setAliasErr) {
+                            console.log('[SelectionBinding] 更新行别名失败:', setAliasErr);
+                        }
+                    }
+
+                    return {
+                        success: true,
+                        message: 'Row binding updated',
+                        data: {
+                            needCreation: false,
+                            action: 'updated',
+                            tableUid: tableMeta.tableUid,
+                            tableInternalId: tableMeta.internalId,
+                            tableControlId: tableMeta.controlId,
+                            tableTag: tableMeta.tag,
+                            tableDescriptionTag: tableMeta.descriptionMeta,
+                            tableMeta: tableMeta.metaObj || null,
+                            tableIndex: tableMeta.tableIndex,
+                            rowIndex: rowIndex,
+                            columnIndex: columnIndex,
+                            rowControlId: existingRowControl.internalId,
+                            rowTag: rowTag,
+                            rowAlias: aliasText,
+                            rowMeta: rowMeta,
+                            timestamp: nowIso
+                        }
+                    };
+                }
+
+                var selectionPrepared = false;
+                if (rowContext.range) {
+                    if (typeof rowContext.range.Select === 'function') {
+                        try {
+                            rowContext.range.Select();
+                            selectionPrepared = true;
+                        } catch (selectErr) {
+                            console.log('[SelectionBinding] 选中行范围失败:', selectErr);
+                        }
+                    }
+
+                    if (!selectionPrepared && typeof doc.SetSelection === 'function') {
+                        try {
+                            doc.SetSelection(rowContext.range);
+                            selectionPrepared = true;
+                        } catch (setSelectionErr) {
+                            console.log('[SelectionBinding] 设置选区失败:', setSelectionErr);
+                        }
+                    }
+                }
+
+                return {
+                    success: true,
+                    message: 'Row binding requires creation',
+                        data: {
+                            needCreation: true,
+                            action: 'create',
+                            tableUid: tableMeta.tableUid,
+                            tableInternalId: tableMeta.internalId,
+                            tableControlId: tableMeta.controlId,
+                            tableTag: tableMeta.tag,
+                            tableDescriptionTag: tableMeta.descriptionMeta,
+                            tableMeta: tableMeta.metaObj || null,
+                            tableIndex: tableMeta.tableIndex,
+                            rowIndex: rowIndex,
+                            columnIndex: columnIndex,
+                            tag: rowTag,
+                            alias: aliasText,
+                            rowMeta: rowMeta,
+                        lock: payload.lock,
+                        selectionPrepared: selectionPrepared,
+                        timestamp: nowIso
+                    }
+                };
+
+            }, { async: false, cb: (res) => resolve(res) });
+        });
+
+        if (!initialResult) {
+            return { success: false, error: 'Row binding command failed to execute' };
+        }
+
+        if (!initialResult.success) {
+            return initialResult;
+        }
+
+        const docData = initialResult.data || {};
+
+        if (!docData.needCreation) {
+            const persistResult = await this.persistRowMetaToTable({
+                tableUid: docData.tableUid,
+                tableInternalId: docData.tableInternalId,
+                tableControlId: docData.tableControlId,
+                tableTag: docData.tableTag,
+                tableDescriptionTag: docData.tableDescriptionTag,
+                tableIndex: docData.tableIndex,
+                existingMeta: docData.tableMeta || null,
+                rowMeta: docData.rowMeta || null,
+                rowIndex: docData.rowIndex,
+                rowControlId: docData.rowControlId,
+                action: docData.action || 'updated'
+            });
+
+            if (persistResult && persistResult.success && persistResult.data) {
+                initialResult.data.tableTag = persistResult.data.tableTag || initialResult.data.tableTag;
+                initialResult.data.tableDescriptionTag = persistResult.data.tableDescriptionTag || initialResult.data.tableDescriptionTag;
+                initialResult.data.tableMeta = persistResult.data.tableMeta || initialResult.data.tableMeta;
+                if (persistResult.data.persistenceLog) {
+                    initialResult.data.persistenceLog = persistResult.data.persistenceLog;
+                }
+            } else if (persistResult && !persistResult.success) {
+                initialResult.data.persistenceWarning = persistResult.error || 'Table metadata persistence failed';
+            }
+
+            return initialResult;
+        }
+
+        if (!window.Asc || !window.Asc.plugin || typeof window.Asc.plugin.executeMethod !== 'function') {
+            return {
+                success: false,
+                error: 'AddContentControl executeMethod unavailable',
+                data: docData
+            };
+        }
+
+        const addOptions = {};
+        if (docData.tag) {
+            addOptions.Tag = docData.tag;
+        }
+        if (docData.lock && typeof docData.lock === 'object') {
+            addOptions.Lock = docData.lock;
+        }
+
+        const creationResult = await new Promise((resolve) => {
+            try {
+                window.Asc.plugin.executeMethod('AddContentControl', [3, addOptions], function () {
+                    try {
+                        window.Asc.plugin.executeMethod('GetCurrentContentControlPr', [], function (ccPr) {
+                            resolve({ success: true, ccPr });
+                        });
+                    } catch (getPrErr) {
+                        console.log('[SelectionBinding] 获取新建内容控件属性失败:', getPrErr);
+                        resolve({ success: false, error: getPrErr && getPrErr.message ? getPrErr.message : 'GetCurrentContentControlPr failed' });
+                    }
+                });
+            } catch (err) {
+                resolve({ success: false, error: err && err.message ? err.message : String(err) });
+            }
+        });
+
+        if (!creationResult.success) {
+            return {
+                success: false,
+                error: creationResult.error || 'Row content control creation failed',
+                data: docData
+            };
+        }
+
+        const finalizeScope = {
+            rowBindingFinalize: {
+                internalId: (creationResult.ccPr && creationResult.ccPr.InternalId) ? creationResult.ccPr.InternalId : '',
+                tag: docData.tag,
+                alias: docData.alias,
+                tableUid: docData.tableUid,
+                tableInternalId: docData.tableInternalId,
+                tableControlId: docData.tableControlId,
+                tableTag: docData.tableTag,
+                tableDescriptionTag: docData.tableDescriptionTag,
+                rowIndex: docData.rowIndex,
+                columnIndex: docData.columnIndex,
+                rowMeta: docData.rowMeta
+            }
+        };
+
+        const finalizeResult = await new Promise((resolve) => {
+            this.editor.runInDoc(function () {
+                function safeCall(target, methodName, args) {
+                    if (!target || typeof target[methodName] !== 'function') {
+                        return { ok: false };
+                    }
+                    try {
+                        return { ok: true, value: target[methodName].apply(target, args || []) };
+                    } catch (err) {
+                        console.log('[SelectionBinding] finalize 调用', methodName, '失败:', err);
+                        return { ok: false, error: err };
+                    }
+                }
+
+                function parsePrefixedJsonTag(tag, prefix) {
+                    if (typeof tag !== 'string' || tag.indexOf(prefix) !== 0) {
+                        return null;
+                    }
+                    try {
+                        return JSON.parse(tag.slice(prefix.length));
+                    } catch (e) {
+                        console.log('[SelectionBinding] finalize 解析标签失败:', tag, e);
+                        return null;
+                    }
+                }
+
+                var doc = null;
+                try {
+                    if (typeof Api !== 'undefined' && typeof Api.GetDocument === 'function') {
+                        doc = Api.GetDocument();
+                    }
+                } catch (docErr) {
+                    console.log('[SelectionBinding] finalize 获取文档失败:', docErr);
+                }
+
+                if (!doc) {
+                    return { success: false, error: 'Document object unavailable' };
+                }
+
+                var payload = (Asc.scope && Asc.scope.rowBindingFinalize) ? Asc.scope.rowBindingFinalize : null;
+                if (!payload || !payload.internalId) {
+                    return { success: false, error: 'Row control internalId missing' };
+                }
+
+                var controls = [];
+                if (typeof doc.GetAllContentControls === 'function') {
+                    try {
+                        controls = doc.GetAllContentControls();
+                    } catch (controlsErr) {
+                        console.log('[SelectionBinding] finalize 获取控件失败:', controlsErr);
+                    }
+                }
+
+                for (var i = 0; i < controls.length; i++) {
+                    var control = controls[i];
+                    if (!control) {
+                        continue;
+                    }
+
+                    var internalIdRes = safeCall(control, 'GetInternalId');
+                    if (!internalIdRes.ok || internalIdRes.value !== payload.internalId) {
+                        continue;
+                    }
+
+                    if (payload.tag && typeof control.SetTag === 'function') {
+                        try {
+                            control.SetTag(payload.tag);
+                        } catch (setTagErr) {
+                            console.log('[SelectionBinding] finalize 设置Tag失败:', setTagErr);
+                        }
+                    }
+
+                    if (payload.alias && typeof control.SetAlias === 'function') {
+                        try {
+                            control.SetAlias(payload.alias);
+                        } catch (setAliasErr) {
+                            console.log('[SelectionBinding] finalize 设置Alias失败:', setAliasErr);
+                        }
+                    }
+
+                    var finalTagRes = safeCall(control, 'GetTag');
+                    var finalAliasRes = safeCall(control, 'GetAlias');
+
+                    var finalTag = finalTagRes.ok && typeof finalTagRes.value === 'string' ? finalTagRes.value : (payload.tag || '');
+                    var finalAlias = finalAliasRes.ok && typeof finalAliasRes.value === 'string' ? finalAliasRes.value : (payload.alias || '');
+                    var parsedMeta = parsePrefixedJsonTag(finalTag, 'row-meta:');
+
+                    return {
+                        success: true,
+                        message: 'Row binding created successfully',
+                        data: {
+                            action: 'created',
+                            tableUid: payload.tableUid,
+                            tableInternalId: payload.tableInternalId,
+                            tableControlId: payload.tableControlId,
+                            tableTag: payload.tableTag,
+                            tableDescriptionTag: payload.tableDescriptionTag,
+                            rowIndex: payload.rowIndex,
+                            columnIndex: payload.columnIndex,
+                            rowControlId: payload.internalId,
+                            rowTag: finalTag,
+                            rowAlias: finalAlias,
+                            rowMeta: parsedMeta || payload.rowMeta || null,
+                            timestamp: new Date().toISOString()
+                        }
+                    };
+                }
+
+                return { success: false, error: 'New row content control not found after creation' };
+
+            }, { async: false, scope: finalizeScope, cb: (res) => resolve(res) });
+        });
+
+        if (!finalizeResult) {
+            return { success: false, error: 'Row binding finalize failed' };
+        }
+
+        if (!finalizeResult.success) {
+            return finalizeResult;
+        }
+
+        const finalData = Object.assign({}, docData, finalizeResult.data || {});
+        finalData.action = 'created';
+        finalData.needCreation = false;
+
+        const finalizePersistResult = await this.persistRowMetaToTable({
+            tableUid: finalData.tableUid,
+            tableInternalId: finalData.tableInternalId,
+            tableControlId: finalData.tableControlId,
+            tableTag: finalData.tableTag,
+            tableDescriptionTag: finalData.tableDescriptionTag,
+            tableIndex: finalData.tableIndex,
+            existingMeta: finalData.tableMeta || null,
+            rowMeta: finalData.rowMeta || null,
+            rowIndex: finalData.rowIndex,
+            rowControlId: finalData.rowControlId,
+            action: finalData.action
+        });
+
+        if (finalizePersistResult && finalizePersistResult.success && finalizePersistResult.data) {
+            finalData.tableTag = finalizePersistResult.data.tableTag || finalData.tableTag;
+            finalData.tableDescriptionTag = finalizePersistResult.data.tableDescriptionTag || finalData.tableDescriptionTag;
+            finalData.tableMeta = finalizePersistResult.data.tableMeta || finalData.tableMeta;
+            if (finalizePersistResult.data.persistenceLog) {
+                finalData.persistenceLog = finalizePersistResult.data.persistenceLog;
+            }
+        } else if (finalizePersistResult && !finalizePersistResult.success) {
+            finalData.persistenceWarning = finalizePersistResult.error || 'Table metadata persistence failed';
+        }
+
+        return {
+            success: true,
+            message: 'Row binding created successfully',
+            data: finalData
+        };
+    }
+
+    async persistRowMetaToTable(context) {
+        const payload = Object.assign({
+            tableUid: '',
+            tableInternalId: '',
+            tableControlId: '',
+            tableTag: '',
+            tableDescriptionTag: '',
+            tableIndex: -1,
+            existingMeta: null,
+            rowMeta: null,
+            rowIndex: null,
+            rowControlId: '',
+            action: ''
+        }, context || {});
+
+        window.Asc = window.Asc || {};
+        window.Asc.scope = Object.assign({}, window.Asc.scope || {}, {
+            tableRowPersistence: payload
+        });
+
+        return new Promise((resolve) => {
+            this.editor.runInDoc(function () {
+                function safeCall(target, methodName, args) {
+                    if (!target || typeof target[methodName] !== 'function') {
+                        return { ok: false };
+                    }
+                    try {
+                        return { ok: true, value: target[methodName].apply(target, args || []) };
+                    } catch (err) {
+                        console.log('[SelectionBinding] 表格元数据持久化调用', methodName, '失败:', err);
+                        return { ok: false, error: err };
+                    }
+                }
+
+                function parsePrefixedJsonTag(tag, prefix) {
+                    if (typeof tag !== 'string' || tag.indexOf(prefix) !== 0) {
+                        return null;
+                    }
+                    try {
+                        return JSON.parse(tag.slice(prefix.length));
+                    } catch (e) {
+                        console.log('[SelectionBinding] 解析标签失败:', tag, e);
+                        return null;
+                    }
+                }
+
+                function generateUid(prefix) {
+                    return (prefix || 'uid') + '-' + (new Date().getTime().toString(36)) + '-' + Math.floor(Math.random() * 1e8).toString(36);
+                }
+
+                function cloneMeta(meta) {
+                    if (!meta || typeof meta !== 'object') {
+                        return {};
+                    }
+                    try {
+                        return JSON.parse(JSON.stringify(meta));
+                    } catch (err) {
+                        console.log('[SelectionBinding] 克隆元数据失败:', err);
+                        var copy = {};
+                        for (var key in meta) {
+                            if (Object.prototype.hasOwnProperty.call(meta, key)) {
+                                copy[key] = meta[key];
+                            }
+                        }
+                        return copy;
+                    }
+                }
+
+                var doc = null;
+                try {
+                    if (typeof Api !== 'undefined' && typeof Api.GetDocument === 'function') {
+                        doc = Api.GetDocument();
+                    }
+                } catch (docErr) {
+                    console.log('[SelectionBinding] 表格元数据持久化获取文档失败:', docErr);
+                }
+
+                if (!doc) {
+                    return { success: false, error: 'Document object unavailable' };
+                }
+
+                var persistencePayload = (Asc.scope && Asc.scope.tableRowPersistence) ? Asc.scope.tableRowPersistence : null;
+                if (!persistencePayload) {
+                    return { success: false, error: 'Persistence payload missing' };
+                }
+
+                var controls = [];
+                if (typeof doc.GetAllContentControls === 'function') {
+                    try {
+                        controls = doc.GetAllContentControls();
+                    } catch (controlsErr) {
+                        console.log('[SelectionBinding] 表格元数据持久化获取控件失败:', controlsErr);
+                    }
+                }
+
+                var targetControl = null;
+                for (var i = 0; i < controls.length; i++) {
+                    var control = controls[i];
+                    if (!control) {
+                        continue;
+                    }
+
+                    var idRes = safeCall(control, 'GetId');
+                    var internalIdRes = safeCall(control, 'GetInternalId');
+                    var tagRes = safeCall(control, 'GetTag');
+                    var tag = tagRes.ok && typeof tagRes.value === 'string' ? tagRes.value : '';
+                    var parsedTag = parsePrefixedJsonTag(tag, 'table-meta:');
+
+                    var matches = false;
+                    if (persistencePayload.tableInternalId && internalIdRes.ok && internalIdRes.value === persistencePayload.tableInternalId) {
+                        matches = true;
+                    } else if (!matches && persistencePayload.tableControlId && idRes.ok && idRes.value === persistencePayload.tableControlId) {
+                        matches = true;
+                    } else if (!matches && persistencePayload.tableUid && parsedTag && parsedTag.tableUid === persistencePayload.tableUid) {
+                        matches = true;
+                    }
+
+                    if (matches) {
+                        targetControl = control;
+                        break;
+                    }
+                }
+
+                var existingMeta = null;
+                if (persistencePayload.existingMeta && typeof persistencePayload.existingMeta === 'object') {
+                    existingMeta = cloneMeta(persistencePayload.existingMeta);
+                }
+
+                if (!existingMeta && typeof persistencePayload.tableTag === 'string') {
+                    existingMeta = parsePrefixedJsonTag(persistencePayload.tableTag, 'table-meta:');
+                }
+
+                if (!existingMeta && typeof persistencePayload.tableDescriptionTag === 'string') {
+                    existingMeta = parsePrefixedJsonTag(persistencePayload.tableDescriptionTag, 'table-meta:');
+                }
+
+                if (!existingMeta) {
+                    existingMeta = {};
+                }
+
+                if (!existingMeta.tableUid && persistencePayload.tableUid) {
+                    existingMeta.tableUid = persistencePayload.tableUid;
+                }
+
+                if (!existingMeta.createdAt) {
+                    existingMeta.createdAt = new Date().toISOString();
+                }
+
+                var nowIso = new Date().toISOString();
+                existingMeta.lastUpdatedAt = nowIso;
+                if (persistencePayload.action) {
+                    existingMeta.lastAction = persistencePayload.action;
+                }
+
+                existingMeta.rowBindings = existingMeta.rowBindings && typeof existingMeta.rowBindings === 'object' ? existingMeta.rowBindings : {};
+                existingMeta.rowIndexMap = existingMeta.rowIndexMap && typeof existingMeta.rowIndexMap === 'object' ? existingMeta.rowIndexMap : {};
+                existingMeta.rowControlMap = existingMeta.rowControlMap && typeof existingMeta.rowControlMap === 'object' ? existingMeta.rowControlMap : {};
+
+                var storedRowUid = '';
+                if (persistencePayload.rowMeta && typeof persistencePayload.rowMeta === 'object') {
+                    var rowMeta = cloneMeta(persistencePayload.rowMeta);
+                    if (typeof persistencePayload.rowIndex === 'number' && typeof rowMeta.rowIndex !== 'number') {
+                        rowMeta.rowIndex = persistencePayload.rowIndex;
+                    }
+                    if (!rowMeta.rowUid) {
+                        rowMeta.rowUid = generateUid('row');
+                    }
+                    if (!rowMeta.createdAt) {
+                        rowMeta.createdAt = nowIso;
+                    }
+                    rowMeta.updatedAt = nowIso;
+                    storedRowUid = rowMeta.rowUid;
+
+                    existingMeta.rowBindings[rowMeta.rowUid] = rowMeta;
+
+                    if (typeof rowMeta.rowIndex === 'number') {
+                        var idxKey = String(rowMeta.rowIndex);
+                        existingMeta.rowIndexMap[idxKey] = {
+                            rowUid: rowMeta.rowUid,
+                            rowControlId: persistencePayload.rowControlId || rowMeta.rowControlId || '',
+                            updatedAt: nowIso
+                        };
+                    }
+
+                    if (persistencePayload.rowControlId) {
+                        existingMeta.rowControlMap[persistencePayload.rowControlId] = {
+                            rowUid: rowMeta.rowUid,
+                            rowIndex: rowMeta.rowIndex,
+                            updatedAt: nowIso
+                        };
+                    }
+
+                    existingMeta.lastRowUid = rowMeta.rowUid;
+                    existingMeta.lastRowIndex = rowMeta.rowIndex;
+                }
+
+                existingMeta.rowCount = Object.keys(existingMeta.rowBindings).length;
+
+                var newTag = 'table-meta:' + JSON.stringify(existingMeta);
+
+                var controlTagAfter = newTag;
+                var controlSetSuccess = false;
+                if (targetControl && typeof targetControl.SetTag === 'function') {
+                    try {
+                        targetControl.SetTag(newTag);
+                        var refreshedTag = safeCall(targetControl, 'GetTag');
+                        if (refreshedTag.ok && typeof refreshedTag.value === 'string') {
+                            controlTagAfter = refreshedTag.value;
+                        }
+                        controlSetSuccess = true;
+                    } catch (setTagErr) {
+                        console.log('[SelectionBinding] 设置表格内容控件Tag失败:', setTagErr);
+                    }
+                }
+
+                var tableElement = null;
+                if (targetControl) {
+                    var rangeRes = safeCall(targetControl, 'GetRange');
+                    if (rangeRes.ok && rangeRes.value && typeof rangeRes.value.GetElementsCount === 'function' && typeof rangeRes.value.GetElement === 'function') {
+                        try {
+                            var elemCount = rangeRes.value.GetElementsCount();
+                            for (var elemIdx = 0; elemIdx < elemCount; elemIdx++) {
+                                var element = rangeRes.value.GetElement(elemIdx);
+                                if (element && typeof element.GetClassType === 'function') {
+                                    var classType = element.GetClassType();
+                                    if (classType === 'CTable') {
+                                        tableElement = element;
+                                        break;
+                                    }
+                                }
+                            }
+                        } catch (rangeErr) {
+                            console.log('[SelectionBinding] 通过控件范围查找表格失败:', rangeErr);
+                        }
+                    }
+                }
+
+                if (!tableElement && typeof persistencePayload.tableIndex === 'number' && persistencePayload.tableIndex >= 0) {
+                    if (typeof doc.GetElement === 'function' && typeof doc.GetElementsCount === 'function') {
+                        try {
+                            var totalElements = doc.GetElementsCount();
+                            if (persistencePayload.tableIndex < totalElements) {
+                                var candidate = doc.GetElement(persistencePayload.tableIndex);
+                                if (candidate && typeof candidate.GetClassType === 'function' && candidate.GetClassType() === 'CTable') {
+                                    tableElement = candidate;
+                                }
+                            }
+                        } catch (idxErr) {
+                            console.log('[SelectionBinding] 根据索引查找表格失败:', idxErr);
+                        }
+                    }
+                }
+
+                var descriptionTag = persistencePayload.tableDescriptionTag || '';
+                if (tableElement && typeof tableElement.SetTableDescription === 'function') {
+                    try {
+                        tableElement.SetTableDescription(newTag);
+                        var descRes = safeCall(tableElement, 'GetTableDescription');
+                        if (descRes.ok && typeof descRes.value === 'string') {
+                            descriptionTag = descRes.value;
+                        } else {
+                            descriptionTag = newTag;
+                        }
+                    } catch (setDescErr) {
+                        console.log('[SelectionBinding] 设置表格描述失败:', setDescErr);
+                        if (!descriptionTag) {
+                            descriptionTag = newTag;
+                        }
+                    }
+                } else if (!descriptionTag) {
+                    descriptionTag = newTag;
+                }
+
+                return {
+                    success: true,
+                    data: {
+                        tableTag: controlTagAfter,
+                        tableDescriptionTag: descriptionTag,
+                        tableMeta: existingMeta,
+                        persistenceLog: {
+                            updatedAt: nowIso,
+                            controlMatched: !!targetControl,
+                            controlTagUpdated: controlSetSuccess,
+                            storedRowUid: storedRowUid,
+                            rowCount: existingMeta.rowCount
+                        }
+                    }
+                };
+
+            }, { async: false, cb: (res) => resolve(res) });
+        });
+    }
+
     // 更新行绑定数据
     async updateRowBinding(updateData) {
         const options = updateData || {};
@@ -1011,7 +2108,19 @@ export class SelectionBindingService {
             metadata: options.metadata || {}
         };
 
-        return this.editor.runInDoc(function () {
+        const updateResult = await this.editor.runInDoc(function () {
+            function parsePrefixedJsonTag(tag, prefix) {
+                if (typeof tag !== 'string' || tag.indexOf(prefix) !== 0) {
+                    return null;
+                }
+                try {
+                    return JSON.parse(tag.slice(prefix.length));
+                } catch (err) {
+                    console.log('[SelectionBinding] 解析标签失败:', tag, err);
+                    return null;
+                }
+            }
+
             var doc = Api.GetDocument();
             var scope = Asc.scope;
 
@@ -1019,11 +2128,9 @@ export class SelectionBindingService {
             console.log('更新参数:', scope);
 
             try {
-                // 获取所有Content Control
                 var allControls = doc.GetAllContentControls();
                 console.log('文档中的Content Controls数量:', allControls.length);
 
-                // 查找匹配rid的行控件
                 for (var i = 0; i < allControls.length; i++) {
                     var control = allControls[i];
 
@@ -1038,10 +2145,7 @@ export class SelectionBindingService {
                             alias = control.GetAlias();
                         }
 
-                        // 检查是否匹配rid
                         var isMatch = false;
-
-                        // 首先尝试直接获取控件的internalId
                         var controlInternalId = '';
                         try {
                             if (typeof control.GetInternalId === 'function') {
@@ -1051,30 +2155,74 @@ export class SelectionBindingService {
                             console.log('获取控件internalId失败:', e);
                         }
 
-                        // 优先使用internalId匹配
                         if (scope.rid && controlInternalId && controlInternalId === scope.rid) {
                             isMatch = true;
-                        }
-                        // 备选方案
-                        else if (scope.rid && (tag.includes(scope.rid) || alias.includes(scope.rid))) {
+                        } else if (scope.rid && (tag.indexOf(scope.rid) !== -1 || alias.indexOf(scope.rid) !== -1)) {
                             isMatch = true;
                         }
 
                         if (isMatch) {
                             console.log('找到匹配的行控件:', i, 'Tag:', tag, 'Alias:', alias);
 
-                            // 更新Tag
                             if (typeof control.SetTag === 'function' && scope.tag) {
                                 control.SetTag(scope.tag);
                                 console.log('更新行Tag为:', scope.tag);
                             }
 
-                            // 更新Alias（包含子项信息）
                             if (typeof control.SetAlias === 'function') {
                                 var childrenCount = scope.children ? scope.children.length : 0;
                                 var newAlias = '表格行绑定: ' + scope.rid + ' (子项: ' + childrenCount + ')';
                                 control.SetAlias(newAlias);
                                 console.log('更新行Alias为:', newAlias);
+                            }
+
+                            var updatedTag = scope.tag || tag;
+                            var parsedRowMeta = parsePrefixedJsonTag(updatedTag, 'row-meta:');
+                            var tableUid = parsedRowMeta && parsedRowMeta.tableUid ? parsedRowMeta.tableUid : '';
+                            var tableInternalId = parsedRowMeta && parsedRowMeta.tableInternalId ? parsedRowMeta.tableInternalId : '';
+                            var rowIndex = parsedRowMeta && typeof parsedRowMeta.rowIndex === 'number' ? parsedRowMeta.rowIndex : null;
+
+                            var tableControlId = '';
+                            var tableTag = '';
+                            var tableMeta = null;
+
+                            if (tableUid) {
+                                for (var j = 0; j < allControls.length; j++) {
+                                    var tableCandidate = allControls[j];
+                                    if (!tableCandidate || tableCandidate === control) {
+                                        continue;
+                                    }
+
+                                    var candidateTag = '';
+                                    try {
+                                        if (typeof tableCandidate.GetTag === 'function') {
+                                            candidateTag = tableCandidate.GetTag();
+                                        }
+                                    } catch (candidateTagErr) {
+                                        console.log('[SelectionBinding] 获取表格控件Tag失败:', candidateTagErr);
+                                    }
+
+                                    var parsedTableMeta = parsePrefixedJsonTag(candidateTag, 'table-meta:');
+                                    if (parsedTableMeta && parsedTableMeta.tableUid === tableUid) {
+                                        tableTag = candidateTag;
+                                        tableMeta = parsedTableMeta;
+                                        if (!tableInternalId && typeof tableCandidate.GetInternalId === 'function') {
+                                            try {
+                                                tableInternalId = tableCandidate.GetInternalId();
+                                            } catch (tableInternalErr) {
+                                                console.log('[SelectionBinding] 获取表格控件InternalId失败:', tableInternalErr);
+                                            }
+                                        }
+                                        if (typeof tableCandidate.GetId === 'function') {
+                                            try {
+                                                tableControlId = tableCandidate.GetId();
+                                            } catch (tableIdErr) {
+                                                console.log('[SelectionBinding] 获取表格控件Id失败:', tableIdErr);
+                                            }
+                                        }
+                                        break;
+                                    }
+                                }
                             }
 
                             return {
@@ -1086,26 +2234,74 @@ export class SelectionBindingService {
                                     newTag: scope.tag,
                                     rid: scope.rid,
                                     childrenCount: scope.children ? scope.children.length : 0,
-                                    updatedAt: new Date().toISOString()
+                                    updatedAt: new Date().toISOString(),
+                                    rowMeta: parsedRowMeta,
+                                    rowIndex: rowIndex,
+                                    rowControlId: controlInternalId,
+                                    tableUid: tableUid,
+                                    tableInternalId: tableInternalId,
+                                    tableControlId: tableControlId,
+                                    tableTag: tableTag,
+                                    tableMeta: tableMeta,
+                                    tableDescriptionTag: ''
                                 }
                             };
                         }
-                    } catch (e) {
-                        console.log('检查行控件出错:', e);
+                    } catch (errCheck) {
+                        console.log('检查行控件出错:', errCheck);
                     }
                 }
 
-                // 没有找到匹配的控件
                 console.log('未找到匹配的行控件');
                 return {
                     success: false,
                     error: 'No matching row control found for rid: ' + scope.rid
                 };
 
-            } catch (e) {
-                console.log('更新行绑定数据出错:', e);
-                return { success: false, error: e.message };
+            } catch (errUpdate) {
+                console.log('更新行绑定数据出错:', errUpdate);
+                return { success: false, error: errUpdate.message };
             }
         });
+
+        if (!updateResult) {
+            return { success: false, error: 'Row binding update failed to execute' };
+        }
+
+        if (!updateResult.success) {
+            return updateResult;
+        }
+
+        const resultData = updateResult.data || {};
+        const persistencePayload = {
+            tableUid: resultData.tableUid || (resultData.rowMeta && resultData.rowMeta.tableUid) || '',
+            tableInternalId: resultData.tableInternalId || (resultData.rowMeta && resultData.rowMeta.tableInternalId) || '',
+            tableControlId: resultData.tableControlId || '',
+            tableTag: resultData.tableTag || '',
+            tableDescriptionTag: resultData.tableDescriptionTag || '',
+            existingMeta: resultData.tableMeta || null,
+            rowMeta: resultData.rowMeta || null,
+            rowIndex: resultData.rowIndex,
+            rowControlId: resultData.rowControlId || (options && options.rid ? options.rid : ''),
+            action: 'updated'
+        };
+
+        if (persistencePayload.tableUid || persistencePayload.tableInternalId || persistencePayload.rowMeta) {
+            const persistResult = await this.persistRowMetaToTable(persistencePayload);
+
+            if (persistResult && persistResult.success && persistResult.data) {
+                updateResult.data.tableTag = persistResult.data.tableTag || updateResult.data.tableTag;
+                updateResult.data.tableDescriptionTag = persistResult.data.tableDescriptionTag || updateResult.data.tableDescriptionTag;
+                updateResult.data.tableMeta = persistResult.data.tableMeta || updateResult.data.tableMeta;
+                if (persistResult.data.persistenceLog) {
+                    updateResult.data.persistenceLog = persistResult.data.persistenceLog;
+                }
+            } else if (persistResult && !persistResult.success) {
+                updateResult.data = updateResult.data || {};
+                updateResult.data.persistenceWarning = persistResult.error || 'Table metadata persistence failed';
+            }
+        }
+
+        return updateResult;
     }
 }

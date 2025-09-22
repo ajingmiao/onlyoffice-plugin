@@ -22,6 +22,7 @@ export const COMMANDS = {
     UPDATE_BINDING: 'updateBinding',
     UPDATE_CHART_BINDING: 'updateChartBinding',
     UPDATE_ROW_BINDING: 'updateRowBinding',
+    BIND_ROW_DATA: 'bindRowData',
     GET_CHART_TYPE: 'getChartType'  // 新增
   };
   
