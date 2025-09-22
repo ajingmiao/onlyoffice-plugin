@@ -1,0 +1,85 @@
+1）点击文档中的表格 → 获取该表格的唯一ID、点击的行/列；
+2）给当前光标所在行绑定/更新隐藏数据；
+3）可选的集中式隐藏数据（写在表格描述里）。
+下面每一步都附上对应的官方 API 依据（带链接）。
+
+方案总览
+A. 监听点击 → 精确定位到表格与单元格（行列）
+
+在插件端绑定编辑器点击事件：
+
+attachEditorEvent("onClick", ...)（插件事件）。
+api.onlyoffice.com
+
+回调中进入文档沙箱（callCommand），根据当前选择定位：
+
+var range = doc.GetRangeBySelect();（当前选区 Range）。
+api.onlyoffice.com
+
+从 range 拿到所在段落 range.GetParagraph()，再向上取单元格/表格：
+
+段落：ApiParagraph → GetParentTableCell() / GetParentTable()。
+api.onlyoffice.com
++1
+
+也可从 Run 取：ApiRun.GetParentParagraph() → 再取 GetParentTableCell()。
+api.onlyoffice.com
++1
+
+一旦得到单元格 ApiTableCell，即可获得：
+
+行索引：cell.GetRowIndex()；列索引：cell.GetIndex()。
+api.onlyoffice.com
++1
+
+取到父表格：cell.GetParentTable() 或从段落/内容控件向上 GetParentTable()。
+api.onlyoffice.com
++1
+
+这样你就能在点击时得到 { table, rowIndex, colIndex }。
+
+B. 为表格建立稳定唯一ID
+
+首选做法：用“块级内容控件”包裹表格，拿控件自带的唯一ID（后续识别只看它）。
+
+表格支持：ApiTable.InsertInContentControl(1)（返回 ApiBlockLvlSdt）。虽然官方文档示例页更多展示段落/图形，但 ApiTable 的方法列表中确有 InsertInContentControl（你贴的目录亦包含该方法）。ApiBlockLvlSdt 可读取唯一ID：
+
+GetId()（唯一 ID），GetInternalId()（内部 ID）。
+api.onlyoffice.com
++2
+api.onlyoffice.com
++2
+
+初始化流程：检测表格是否已有父内容控件 table.GetParentContentControl()；无则立刻 InsertInContentControl(1) 包裹，并用 SetTag("table-meta:{...}") 写入自定义信息（如业务型 tableUID）。后续一律用 GetId() / GetInternalId() 做唯一识别。
+备注：也可读/写“表格标题/描述”存人类可读标识：SetTableTitle / GetTableTitle、SetTableDescription / GetTableDescription。
+api.onlyoffice.com
++1
+
+C. 给当前行绑定“隐藏数据”（两条可选路径）
+路径 C1（推荐）：行级内容控件（真正“隐形”）
+
+插件调用 executeMethod("AddContentControl", ...) 可直接创建内容控件，且 支持类型 3（row）和 4（cell）：
+AddContentControl(type=3, { Tag: 'row-meta:{"score":95,"status":"ok"}' })
+
+type=3 表示行级内容控件；Tag 字段用于存放隐藏 JSON（编辑器不显示）。
+api.onlyoffice.com
+
+操作步骤：
+
+在沙箱里根据点击定位到 ApiTableCell → cell.GetParentRow()（或 table.GetRow(rowIndex)）拿到行对象（ApiTableRow）。
+api.onlyoffice.com
+
+将插入点移动到该行（例如选中该行第一个段落），然后在宿主侧调用 AddContentControl(3, { Tag: ... })，即可在该行添加行级内容控件（内文可为空、不可见，Tag 存 JSON）。
+api.onlyoffice.com
+
+更新数据：再次调用 executeMethod("GetCurrentContentControlPr") 定位当前行控件，或用遍历接口（见下“查找”），然后 SetTag 写回新 JSON（若需在沙箱端修改，可用 ApiBlockLvlSdt.SetTag(...)）。
+api.onlyoffice.com
++1
+
+查找/遍历行控件：
+
+块级控件可 Search() 或先 table.GetRange() 后做范围内搜索；ApiBlockLvlSdt.Search()、ApiTable.GetRange()。
+api.onlyoffice.com
++1
+
+优点：数据紧挨业务对象（“这一行”），不渲染在版面，跟随行的复制/粘贴/移动；读写只改 Tag 字符串，无需改变可见文本。
