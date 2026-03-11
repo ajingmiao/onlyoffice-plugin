@@ -1009,6 +1009,8 @@ export class SelectionBindingService {
                 return { success: false, error: e.message };
             }
         });
+
+        return updateResult;
     }
 
     // 为当前光标所在行绑定隐藏数据
